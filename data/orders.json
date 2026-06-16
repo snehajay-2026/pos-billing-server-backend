@@ -1,0 +1,41 @@
+[
+  {
+    "id": 1781509616221,
+    "customer": "kk",
+    "service": "Washing",
+    "qty": 1,
+    "status": "not_picked_up",
+    "type": "laundry",
+    "createdAt": "2026-06-15T07:46:56.221Z",
+    "updatedAt": "2026-06-15T07:46:56.221Z",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781509632472,
+    "customer": "AA",
+    "service": "Dry Cleaning",
+    "qty": 1,
+    "status": "pending",
+    "type": "laundry",
+    "createdAt": "2026-06-15T07:47:12.472Z",
+    "updatedAt": "2026-06-15T07:47:12.472Z",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781511445335,
+    "customer": "kk",
+    "service": "Consulting",
+    "hours": 1,
+    "status": "completed",
+    "type": "service",
+    "createdAt": "2026-06-15T08:17:25.335Z",
+    "updatedAt": "2026-06-15T08:17:25.335Z",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "meena@gmail.com"
+  }
+]

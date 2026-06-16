@@ -1,0 +1,328 @@
+[
+  {
+    "id": 1781456897436,
+    "invoiceNo": "INV-01fb9f",
+    "date": "2026-06-14",
+    "items": [
+      {
+        "id": 1781449490412,
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Beverages",
+        "unit": "unit",
+        "_storeType": "retail",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 2,
+        "qtyKg": 2
+      },
+      {
+        "id": 1781449490409,
+        "name": "Atta",
+        "price": 35,
+        "gst": 5,
+        "stock": 45,
+        "barcode": "1234567890126",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 435,
+    "gstTotal": 49.75,
+    "grandTotal": 484.75,
+    "paymentMode": "Cash",
+    "billedBy": "harry@gmail.com",
+    "_storeType": "retail",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781505800420,
+    "invoiceNo": "INV-004e1e",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 2,
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 0,
+        "stock": 999,
+        "barcode": "1234567890124",
+        "category": "Dry Cleaning",
+        "qtyKg": 1
+      },
+      {
+        "id": 1,
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 0,
+        "stock": 999,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 250,
+    "gstTotal": 0,
+    "grandTotal": 250,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781506416858,
+    "invoiceNo": "INV-da5df8",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781506409831,
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 0,
+        "stock": 999,
+        "barcode": "1234567890124",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 0,
+    "grandTotal": 100,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781510671999,
+    "invoiceNo": "INV-c2d506",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781506409826,
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 0,
+        "stock": 999,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 0,
+    "grandTotal": 150,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781510850937,
+    "invoiceNo": "INV-c3d3ae",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781506409826,
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 0,
+        "stock": 998,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 0,
+    "grandTotal": 150,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781510860635,
+    "invoiceNo": "INV-f8d956",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781506409828,
+        "name": "Ironing - Shirt",
+        "price": 20,
+        "gst": 0,
+        "stock": 999,
+        "barcode": "1234567890125",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 20,
+    "gstTotal": 0,
+    "grandTotal": 20,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781511392766,
+    "invoiceNo": "SI2026-392747",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 2,
+        "name": "Repair",
+        "description": "Device repair and maintenance",
+        "rate": 300,
+        "hours": 1,
+        "price": 300,
+        "gst": 0,
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 600,
+    "gstTotal": 0,
+    "grandTotal": 600,
+    "paymentMode": "UPI",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "meena@gmail.com"
+  },
+  {
+    "id": 1781511882460,
+    "invoiceNo": "INV-bc1429",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781503652713,
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 50,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "system",
+        "_storeId": "system",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 5,
+    "grandTotal": 105,
+    "paymentMode": "UPI",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "system",
+    "_storeId": "system",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1781513242347,
+    "invoiceNo": "INV-abb548",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 1781506409813,
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 0,
+        "stock": 997,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1781506409817,
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 0,
+        "stock": 997,
+        "barcode": "1234567890124",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1781506409826,
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 0,
+        "stock": 997,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1781506409831,
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 0,
+        "stock": 998,
+        "barcode": "1234567890124",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "harry@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 0,
+    "grandTotal": 500,
+    "paymentMode": "UPI",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "harry@gmail.com"
+  },
+  {
+    "id": 1781525093464,
+    "invoiceNo": "SI2026-093437",
+    "date": "2026-06-15",
+    "items": [
+      {
+        "id": 2,
+        "name": "Repair",
+        "description": "Device repair and maintenance",
+        "rate": 300,
+        "gst": 18,
+        "hours": 1,
+        "price": 300,
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 300,
+    "gstTotal": 54,
+    "grandTotal": 354,
+    "paymentMode": "UPI",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "meena@gmail.com"
+  }
+]
