@@ -25,7 +25,8 @@ const loginAttempts = new Map();
 
 app.set('trust proxy', 1);
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(
   session({
     name: 'pos_session',
@@ -67,6 +68,94 @@ const writeData = (filename, data) => {
   ensureDataDir();
   const filepath = path.join(DATA_DIR, filename);
   fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+};
+
+const STORE_SETTINGS_FILE = 'storeSettings.json';
+
+const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const isStoreSettingsRegistry = (value) => isPlainObject(value) && isPlainObject(value.byStore);
+
+const normalizeStoreSettingsKey = (storeId, storeType) => {
+  const safeStoreId = String(storeId || '').trim();
+  if (safeStoreId) return `store:${safeStoreId}`;
+  const safeStoreType = String(storeType || '').trim();
+  if (safeStoreType) return `store-type:${safeStoreType}`;
+  return 'global';
+};
+
+const readStoreSettingsRegistry = () => {
+  const raw = readData(STORE_SETTINGS_FILE, {});
+  if (isStoreSettingsRegistry(raw)) {
+    return {
+      byStore: { ...raw.byStore },
+      legacy: isPlainObject(raw.legacy) ? raw.legacy : {},
+    };
+  }
+
+  return {
+    byStore: {},
+    legacy: isPlainObject(raw) ? raw : {},
+  };
+};
+
+const writeStoreSettingsRegistry = (registry) => {
+  writeData(STORE_SETTINGS_FILE, {
+    byStore: registry.byStore || {},
+    legacy: registry.legacy || {},
+  });
+};
+
+const migrateLegacyStoreSettingsToStores = (registry) => {
+  if (!isPlainObject(registry.legacy) || !Object.keys(registry.legacy).length) {
+    return registry;
+  }
+
+  const users = readData('users.json', []);
+  const nextRegistry = {
+    byStore: { ...(registry.byStore || {}) },
+    legacy: registry.legacy,
+  };
+  let hasChanges = false;
+
+  users.forEach((user) => {
+    const key = normalizeStoreSettingsKey(user?.storeId, user?.storeType);
+    if (nextRegistry.byStore[key]) {
+      return;
+    }
+
+    nextRegistry.byStore[key] = {
+      ...registry.legacy,
+      ...(user?.storeType ? { businessType: user.storeType } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    hasChanges = true;
+  });
+
+  if (hasChanges) {
+    writeStoreSettingsRegistry(nextRegistry);
+  }
+
+  return nextRegistry;
+};
+
+const getScopedStoreSettings = (storeId, storeType) => {
+  const registry = migrateLegacyStoreSettingsToStores(readStoreSettingsRegistry());
+  const directKey = normalizeStoreSettingsKey(storeId, storeType);
+  const storeTypeKey = normalizeStoreSettingsKey('', storeType);
+  return registry.byStore[directKey] || registry.byStore[storeTypeKey] || registry.legacy || {};
+};
+
+const saveScopedStoreSettings = (storeId, storeType, settings) => {
+  const registry = migrateLegacyStoreSettingsToStores(readStoreSettingsRegistry());
+  const key = normalizeStoreSettingsKey(storeId, storeType);
+  registry.byStore[key] = {
+    ...(registry.byStore[key] || registry.legacy || {}),
+    ...(settings || {}),
+    updatedAt: new Date().toISOString(),
+  };
+  writeStoreSettingsRegistry(registry);
+  return registry.byStore[key];
 };
 
 const addNotification = (notification) => {
@@ -125,12 +214,22 @@ const getSessionUser = (req) => {
   return req.session && req.session.user ? req.session.user : null;
 };
 
+const getRequestedStoreScope = (req) => {
+  const queryStoreType = String(req.query?.storeType || '').trim();
+  const queryStoreId = String(req.query?.storeId || '').trim();
+  return {
+    storeType: queryStoreType || '',
+    storeId: queryStoreId || queryStoreType || null,
+  };
+};
+
 const getUserMeta = (req) => {
   const sessionUser = getSessionUser(req);
+  const requestedScope = sessionUser?.role === 'SUPER_OWNER' ? getRequestedStoreScope(req) : null;
   return {
     role: sessionUser?.role || 'GUEST',
-    storeType: sessionUser?.storeType || 'nostore',
-    storeId: sessionUser?.storeId || sessionUser?.storeType || null,
+    storeType: requestedScope?.storeType || sessionUser?.storeType || 'nostore',
+    storeId: requestedScope?.storeId || sessionUser?.storeId || sessionUser?.storeType || null,
     email: sessionUser?.email || 'nouser',
     ownerEmail: sessionUser?.ownerEmail || null,
     rootOwnerEmail: sessionUser?.rootOwnerEmail || sessionUser?.ownerEmail || null,
@@ -149,6 +248,35 @@ const requireSecureSession = (req, res, next) => {
 
 const getUserScope = (userMeta) => {
   return userMeta?.storeId || userMeta?.storeType || null;
+};
+
+const normalizeHotelTables = (tables = []) => {
+  const byKey = new Map();
+  tables.forEach((table, index) => {
+    if (!table || typeof table !== 'object') return;
+    const scopeStoreType = table._storeType || 'nostore';
+    const scopeStoreId = table._storeId || table._storeType || 'default';
+    const tableIdentity = table.id != null
+      ? `id:${String(table.id)}`
+      : `name:${String(table.name || '').trim().toLowerCase()}`;
+    const key = `${scopeStoreType}::${scopeStoreId}::${tableIdentity}`;
+    const currentRank = new Date(table.updatedAt || table.createdAt || 0).getTime() || index;
+    const previous = byKey.get(key);
+    const previousRank = previous ? previous.rank : -1;
+    if (!previous || currentRank >= previousRank) {
+      byKey.set(key, { value: { ...table, _persisted: true }, rank: currentRank });
+    }
+  });
+  return Array.from(byKey.values()).map((entry) => entry.value);
+};
+
+const readHotelTablesCollection = () => {
+  const raw = readData('hotel_tables.json', []);
+  const normalized = normalizeHotelTables(raw);
+  if (normalized.length !== raw.length) {
+    writeData('hotel_tables.json', normalized);
+  }
+  return normalized;
 };
 
 const isRole = (req, allowed) => {
@@ -706,6 +834,387 @@ app.get('/api/services', (req, res) => {
   res.json(visible);
 });
 
+// Hotel tables and waiting list endpoints
+app.get('/api/hotel/tables', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const tables = readHotelTablesCollection();
+  const visible = canViewStoreData(req)
+    ? tables.filter((t) => matchesStoreScope(t, storeType, storeId))
+    : filterByUser(tables, storeType, email, storeId);
+  res.json(visible);
+});
+
+app.post('/api/hotel/tables', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const payload = req.body;
+  if (!payload || !payload.name) {
+    return res.status(400).json({ error: 'Invalid table payload' });
+  }
+  const tables = readHotelTablesCollection();
+  const now = new Date().toISOString();
+  const identity = payload.id != null ? String(payload.id) : null;
+  const existingIndex = tables.findIndex((table) =>
+    matchesStoreScope(table, storeType, storeId) && (
+      (identity && String(table.id) === identity) ||
+      String(table.name || '').trim().toLowerCase() === String(payload.name || '').trim().toLowerCase()
+    )
+  );
+  const next = {
+    ...(existingIndex >= 0 ? tables[existingIndex] : {}),
+    id: payload.id || (existingIndex >= 0 ? tables[existingIndex].id : Date.now()),
+    name: payload.name,
+    seats: Number(payload.seats || 2),
+    zone: payload.zone || 'Main',
+    status: payload.status || 'empty',
+    guest: payload.guest || '',
+    partySize: Number(payload.partySize || 0),
+    orderSummary: payload.orderSummary || '',
+    createdAt: existingIndex >= 0 ? tables[existingIndex].createdAt || now : now,
+    updatedAt: now,
+    _storeType: storeType,
+    _storeId: storeId || storeType,
+    _userEmail: email,
+    _persisted: true,
+  };
+  if (existingIndex >= 0) {
+    tables[existingIndex] = next;
+  } else {
+    tables.push(next);
+  }
+  writeData('hotel_tables.json', normalizeHotelTables(tables));
+  res.status(existingIndex >= 0 ? 200 : 201).json(next);
+});
+
+app.put('/api/hotel/tables/:id', (req, res) => {
+  const { storeType, email } = getUserMeta(req);
+  const tables = readHotelTablesCollection();
+  const index = tables.findIndex((t) => String(t.id) === String(req.params.id) && t._storeType === storeType);
+  if (index === -1) return res.status(404).json({ error: 'Table not found' });
+  const updated = {
+    ...tables[index],
+    ...req.body,
+    seats: Number(req.body.seats || tables[index].seats),
+    partySize: Number(req.body.partySize || tables[index].partySize || 0),
+    updatedAt: new Date().toISOString(),
+  };
+  tables[index] = updated;
+  writeData('hotel_tables.json', normalizeHotelTables(tables));
+  res.json(updated);
+});
+
+app.delete('/api/hotel/tables/:id', (req, res) => {
+  const { storeType, email } = getUserMeta(req);
+  const tables = readHotelTablesCollection();
+  const filtered = tables.filter((t) => !(String(t.id) === String(req.params.id) && t._storeType === storeType && (t._userEmail === email || canViewStoreData(req))));
+  writeData('hotel_tables.json', filtered);
+  res.json({ success: true });
+});
+
+app.get('/api/hotel/waiting', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const list = readData('hotel_waiting.json', []);
+  const visible = canViewStoreData(req)
+    ? list.filter((l) => matchesStoreScope(l, storeType, storeId))
+    : filterByUser(list, storeType, email, storeId);
+  res.json(visible);
+});
+
+app.post('/api/hotel/waiting', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const payload = req.body;
+  if (!payload || !payload.name) return res.status(400).json({ error: 'Invalid waiting payload' });
+  const list = readData('hotel_waiting.json', []);
+  const next = {
+    id: payload.id || Date.now(),
+    name: payload.name,
+    seats: Number(payload.seats || 2),
+    createdAt: new Date().toISOString(),
+    _storeType: storeType,
+    _storeId: storeId || storeType,
+    _userEmail: email,
+  };
+  list.push(next);
+  writeData('hotel_waiting.json', list);
+  res.status(201).json(next);
+});
+
+app.delete('/api/hotel/waiting/:id', (req, res) => {
+  const { storeType, email } = getUserMeta(req);
+  const list = readData('hotel_waiting.json', []);
+  const filtered = list.filter((l) => !(String(l.id) === String(req.params.id) && l._storeType === storeType && (l._userEmail === email || canViewStoreData(req))));
+  writeData('hotel_waiting.json', filtered);
+  res.json({ success: true });
+});
+
+app.get('/api/hotel/checkout-history', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const history = readData('hotel_checkout_history.json', []);
+  const visible = canViewStoreData(req)
+    ? history.filter((entry) => matchesStoreScope(entry, storeType, storeId))
+    : filterByUser(history, storeType, email, storeId);
+  res.json(visible);
+});
+
+app.post('/api/hotel/checkout-history', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const payload = req.body || {};
+  if (!payload.roomId && !payload.roomName) {
+    return res.status(400).json({ error: 'Invalid checkout history payload' });
+  }
+
+  const history = readData('hotel_checkout_history.json', []);
+  const next = {
+    id: payload.id || `checkout-${Date.now()}`,
+    roomId: payload.roomId || '',
+    roomName: payload.roomName || payload.roomId || '',
+    guest: payload.guest || '',
+    checkIn: payload.checkIn || '',
+    nights: Number(payload.nights || 1),
+    members: Number(payload.members || 1),
+    rate: Number(payload.rate || 0),
+    total: Number(payload.total || (Number(payload.rate || 0) * Number(payload.nights || 1))),
+    notes: payload.notes || '',
+    idProof: payload.idProof || null,
+    checkedOutAt: payload.checkedOutAt || new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    _storeType: storeType,
+    _storeId: storeId || storeType,
+    _userEmail: email,
+  };
+  history.unshift(next);
+  writeData('hotel_checkout_history.json', history);
+  res.status(201).json(next);
+});
+
+app.delete('/api/hotel/checkout-history', (req, res) => {
+  const { storeType, storeId } = getUserMeta(req);
+  const history = readData('hotel_checkout_history.json', []);
+  const remaining = history.filter((entry) => !matchesStoreScope(entry, storeType, storeId));
+  writeData('hotel_checkout_history.json', remaining);
+  res.json({ success: true, removed: history.length - remaining.length });
+});
+
+app.delete('/api/hotel/checkout-history/:id', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const history = readData('hotel_checkout_history.json', []);
+  const target = history.find((entry) => String(entry.id) === String(req.params.id));
+  if (!target || !matchesStoreScope(target, storeType, storeId)) {
+    return res.status(404).json({ error: 'Checkout history entry not found' });
+  }
+
+  const remaining = history.filter((entry) => !(String(entry.id) === String(req.params.id) && matchesStoreScope(entry, storeType, storeId) && (canViewStoreData(req) || entry._userEmail === email)));
+  if (remaining.length === history.length) {
+    return res.status(403).json({ error: 'Not allowed to delete this checkout history entry' });
+  }
+  writeData('hotel_checkout_history.json', remaining);
+  res.json({ success: true });
+});
+
+app.get('/api/hotel/dining-bills', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const bills = readData('hotel_dining_bills.json', []);
+  const visible = canViewStoreData(req)
+    ? bills.filter((bill) => matchesStoreScope(bill, storeType, storeId))
+    : filterByUser(bills, storeType, email, storeId);
+  res.json(visible);
+});
+
+app.put('/api/hotel/dining-bills/:tableId', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const payload = req.body || {};
+  const tableId = String(req.params.tableId || '').trim();
+  if (!tableId) {
+    return res.status(400).json({ error: 'Table id is required' });
+  }
+
+  const items = Array.isArray(payload.items) ? payload.items : [];
+  const bills = readData('hotel_dining_bills.json', []);
+  const existingIndex = bills.findIndex((bill) => String(bill.tableId) === tableId && matchesStoreScope(bill, storeType, storeId));
+  const now = new Date().toISOString();
+  const next = {
+    ...(existingIndex >= 0 ? bills[existingIndex] : {}),
+    id: existingIndex >= 0 ? bills[existingIndex].id : `dining-bill-${tableId}`,
+    tableId,
+    tableName: payload.tableName || payload.tableId || tableId,
+    guestName: payload.guestName || '',
+    partySize: Number(payload.partySize || 0),
+    checkInDate: payload.checkInDate || '',
+    checkInTime: payload.checkInTime || '',
+    items,
+    openItemCount: items.reduce((sum, item) => sum + Number(item.qty || 0), 0),
+    totalAmount: items.reduce((sum, item) => sum + Number(item.total || 0), 0),
+    status: items.length ? 'open' : 'closed',
+    createdAt: existingIndex >= 0 ? bills[existingIndex].createdAt || now : now,
+    updatedAt: now,
+    _storeType: storeType,
+    _storeId: storeId || storeType,
+    _userEmail: email,
+  };
+
+  if (existingIndex >= 0) {
+    bills[existingIndex] = next;
+  } else {
+    bills.unshift(next);
+  }
+
+  writeData('hotel_dining_bills.json', bills);
+  res.json(next);
+});
+
+app.delete('/api/hotel/dining-bills/:tableId', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const tableId = String(req.params.tableId || '').trim();
+  const bills = readData('hotel_dining_bills.json', []);
+  const remaining = bills.filter((bill) => !(String(bill.tableId) === tableId && matchesStoreScope(bill, storeType, storeId) && (canViewStoreData(req) || bill._userEmail === email)));
+  writeData('hotel_dining_bills.json', remaining);
+  res.json({ success: true });
+});
+
+const normalizeHotelRooms = (rooms = []) => {
+  const byKey = new Map();
+  rooms.forEach((room, index) => {
+    if (!room || typeof room !== 'object') return;
+    const roomIdentity = room.id != null
+      ? `id:${String(room.id)}`
+      : `name:${String(room.name || '').trim().toLowerCase()}`;
+    const currentRank = new Date(room.updatedAt || room.createdAt || 0).getTime() || index;
+    const normalizedRoom = {
+      ...room,
+      id: String(room.id != null ? room.id : room.name || ''),
+      _persisted: room._persisted !== false,
+    };
+    const previous = byKey.get(roomIdentity);
+    if (!previous || currentRank >= previous.rank) {
+      byKey.set(roomIdentity, { value: normalizedRoom, rank: currentRank });
+    }
+  });
+  return Array.from(byKey.values()).map((entry) => entry.value);
+};
+
+const readHotelRoomsCollection = () => {
+  const raw = readData('hotel_rooms.json', []);
+  const normalized = normalizeHotelRooms(raw);
+  writeData('hotel_rooms.json', normalized);
+  return normalized;
+};
+
+app.get('/api/hotel/rooms', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const rooms = readHotelRoomsCollection();
+  const visible = canViewStoreData(req)
+    ? rooms.filter((room) => matchesStoreScope(room, storeType, storeId))
+    : filterByUser(rooms, storeType, email, storeId);
+  res.json(visible);
+});
+
+app.post('/api/hotel/rooms', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const payload = req.body;
+  if (!payload || !payload.name || payload.beds == null) {
+    return res.status(400).json({ error: 'Invalid room payload' });
+  }
+  const rooms = readHotelRoomsCollection();
+  const now = new Date().toISOString();
+  const identity = payload.id != null ? String(payload.id) : null;
+  const existingIndex = rooms.findIndex((room) =>
+    matchesStoreScope(room, storeType, storeId) && (
+      (identity && String(room.id) === identity) ||
+      String(room.name || '').trim().toLowerCase() === String(payload.name || '').trim().toLowerCase()
+    )
+  );
+  const nextRoom = {
+    ...(existingIndex >= 0 ? rooms[existingIndex] : {}),
+    id: payload.id || (existingIndex >= 0 ? rooms[existingIndex].id : Date.now()),
+    name: String(payload.name || '').trim(),
+    beds: Number(payload.beds || 1),
+    status: payload.status || 'vacant',
+    guest: payload.guest || '',
+    checkIn: payload.checkIn || '',
+    nights: Number(payload.nights || 1),
+    members: Number(payload.members || 1),
+    rate: Number(payload.rate || 0),
+    notes: payload.notes || '',
+    ac: payload.ac || 'AC',
+    modern: Boolean(payload.modern),
+    mobile: payload.mobile || '',
+    gst: Number(payload.gst || 0),
+    idProof: payload.idProof || null,
+    createdAt: existingIndex >= 0 ? rooms[existingIndex].createdAt || now : now,
+    updatedAt: now,
+    _storeType: storeType,
+    _storeId: storeId || storeType,
+    _userEmail: email,
+    _persisted: true,
+  };
+  if (existingIndex >= 0) {
+    rooms[existingIndex] = nextRoom;
+  } else {
+    rooms.push(nextRoom);
+  }
+  writeData('hotel_rooms.json', normalizeHotelRooms(rooms));
+  res.status(existingIndex >= 0 ? 200 : 201).json(nextRoom);
+});
+
+app.put('/api/hotel/rooms/:id', (req, res) => {
+  const { storeType, email } = getUserMeta(req);
+  const rooms = readHotelRoomsCollection();
+  const index = rooms.findIndex((room) => String(room.id) === String(req.params.id) && room._storeType === storeType);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  const updatedRoom = {
+    ...rooms[index],
+    ...req.body,
+    beds: Number(req.body.beds ?? rooms[index].beds),
+    nights: Number(req.body.nights ?? rooms[index].nights),
+    members: Number(req.body.members ?? rooms[index].members),
+    rate: Number(req.body.rate ?? rooms[index].rate),
+    gst: Number(req.body.gst ?? rooms[index].gst),
+    updatedAt: new Date().toISOString(),
+    _storeType: rooms[index]._storeType,
+    _storeId: rooms[index]._storeId,
+    _userEmail: rooms[index]._userEmail,
+  };
+  rooms[index] = updatedRoom;
+  writeData('hotel_rooms.json', normalizeHotelRooms(rooms));
+  res.json(updatedRoom);
+});
+
+app.delete('/api/hotel/rooms/:id', (req, res) => {
+  const { storeType, email } = getUserMeta(req);
+  const rooms = readHotelRoomsCollection();
+  const filtered = rooms.filter((room) => !(String(room.id) === String(req.params.id) && room._storeType === storeType && (room._userEmail === email || canViewStoreData(req))));
+  writeData('hotel_rooms.json', normalizeHotelRooms(filtered));
+  res.json({ success: true });
+});
+
+app.post('/api/hotel/rooms/:id/checkout', (req, res) => {
+  const { storeType, email, storeId } = getUserMeta(req);
+  const rooms = readHotelRoomsCollection();
+  const index = rooms.findIndex((room) => String(room.id) === String(req.params.id) && room._storeType === storeType);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Room not found' });
+  }
+  const room = rooms[index];
+  const payload = req.body || {};
+  const nextRoom = {
+    ...room,
+    status: 'vacant',
+    guest: '',
+    checkIn: '',
+    nights: 1,
+    members: 1,
+    notes: '',
+    mobile: '',
+    gst: 0,
+    idProof: null,
+    updatedAt: new Date().toISOString(),
+  };
+  rooms[index] = nextRoom;
+  writeData('hotel_rooms.json', normalizeHotelRooms(rooms));
+  res.json(nextRoom);
+});
+
 app.post('/api/services', (req, res) => {
   const { storeType, email, storeId } = getUserMeta(req);
   const service = req.body;
@@ -1068,13 +1577,12 @@ app.put('/api/invoices/:invoiceNo', (req, res) => {
 });
 
 app.get('/api/store-settings', (req, res) => {
-  const settings = readData('storeSettings.json', {});
+  const settings = getScopedStoreSettings(req.query.storeId, req.query.storeType);
   res.json(settings);
 });
 
 app.post('/api/store-settings', (req, res) => {
-  const settings = req.body;
-  writeData('storeSettings.json', settings || {});
+  const settings = saveScopedStoreSettings(req.query.storeId, req.query.storeType, req.body);
   res.json(settings);
 });
 
@@ -1082,6 +1590,53 @@ app.use(express.static(path.join(__dirname, '..', 'build')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'build', 'index.html'));
 });
+
+// Development helper: impersonate a user by email to create a session (DEV ONLY)
+if (process.env.NODE_ENV !== 'production') {
+  app.post('/api/dev/impersonate', (req, res) => {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const users = readData('users.json', []);
+    const user = users.find((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const sessionUser = {
+      email: user.email,
+      role: user.role,
+      storeType: user.storeType,
+      storeId: user.storeId || null,
+      ownerEmail: user.ownerEmail || null,
+      rootOwnerEmail: user.rootOwnerEmail || user.ownerEmail || null,
+      name: user.name || '',
+      phone: user.phone || '',
+      address: user.address || '',
+      lockedUntil: user.lockedUntil || null,
+    };
+    req.session.user = sessionUser;
+    res.json(sessionUser);
+  });
+  // also expose non-/api path so middleware doesn't block in dev
+  app.post('/dev/impersonate', (req, res) => {
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: 'Email required' });
+    const users = readData('users.json', []);
+    const user = users.find((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const sessionUser = {
+      email: user.email,
+      role: user.role,
+      storeType: user.storeType,
+      storeId: user.storeId || null,
+      ownerEmail: user.ownerEmail || null,
+      rootOwnerEmail: user.rootOwnerEmail || user.ownerEmail || null,
+      name: user.name || '',
+      phone: user.phone || '',
+      address: user.address || '',
+      lockedUntil: user.lockedUntil || null,
+    };
+    req.session.user = sessionUser;
+    res.json(sessionUser);
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);

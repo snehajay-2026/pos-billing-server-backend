@@ -1,0 +1,128 @@
+[
+  {
+    "id": "checkout-R101-1782333087261",
+    "roomId": "R101",
+    "roomName": "Room 101",
+    "guest": "asd",
+    "checkIn": "2026-06-24",
+    "nights": 1,
+    "members": 2,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "",
+    "idProof": {
+      "type": "Aadhar",
+      "number": ""
+    },
+    "checkedOutAt": "2026-06-24T20:31:27.261Z",
+    "createdAt": "2026-06-24T20:31:27.268Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "checkout-R101-1782328058303",
+    "roomId": "R101",
+    "roomName": "Room 101",
+    "guest": "kartik kodag",
+    "checkIn": "",
+    "nights": 1,
+    "members": 1,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "trialllll",
+    "idProof": {
+      "type": "Passport",
+      "number": "33244424"
+    },
+    "checkedOutAt": "2026-06-24T19:07:38.303Z",
+    "createdAt": "2026-06-24T19:07:38.310Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "checkout-R101-1782326216822",
+    "roomId": "R101",
+    "roomName": "Room 101",
+    "guest": "Ajay Kodag",
+    "checkIn": "",
+    "nights": 1,
+    "members": 1,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "",
+    "idProof": {
+      "type": "Passport",
+      "number": "2442444"
+    },
+    "checkedOutAt": "2026-06-24T18:36:56.822Z",
+    "createdAt": "2026-06-24T18:36:56.827Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "checkout-R101-1782326129896",
+    "roomId": "R101",
+    "roomName": "Room 101",
+    "guest": "Ajay kodag",
+    "checkIn": "",
+    "nights": 1,
+    "members": 1,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "",
+    "idProof": {
+      "type": "Passport",
+      "number": "ddsgg35"
+    },
+    "checkedOutAt": "2026-06-24T18:35:29.896Z",
+    "createdAt": "2026-06-24T18:35:29.904Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "checkout-R102-1782323752208",
+    "roomId": "R102",
+    "roomName": "Room 102",
+    "guest": "Ajay Kodag",
+    "checkIn": "",
+    "nights": 1,
+    "members": 1,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "",
+    "idProof": {
+      "type": "Passport",
+      "number": "2222222"
+    },
+    "checkedOutAt": "2026-06-24T17:55:52.208Z",
+    "createdAt": "2026-06-24T17:55:52.204Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "checkout-R101-1782282317076",
+    "roomId": "R101",
+    "roomName": "Room 101",
+    "guest": "ajay kodag",
+    "checkIn": "",
+    "nights": 1,
+    "members": 2,
+    "rate": 1200,
+    "total": 1200,
+    "notes": "trial",
+    "idProof": {
+      "type": "Passport",
+      "number": "2222222"
+    },
+    "checkedOutAt": "2026-06-24T06:25:17.076Z",
+    "createdAt": "2026-06-24T06:25:17.084Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "id": 1782333811660,
+    "name": "ajay",
+    "seats": 2,
+    "createdAt": "2026-06-24T20:43:31.660Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "W1782333811654",
+    "name": "ajay",
+    "seats": 2,
+    "createdAt": "2026-06-24T20:43:31.706Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": 1782333821424,
+    "name": "kartik",
+    "seats": 2,
+    "createdAt": "2026-06-24T20:43:41.424Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  },
+  {
+    "id": "W1782333821417",
+    "name": "kartik",
+    "seats": 2,
+    "createdAt": "2026-06-24T20:43:41.451Z",
+    "_storeType": "hotel",
+    "_storeId": "Ambegaon 01",
+    "_userEmail": "alex@gmail.com"
+  }
+]
