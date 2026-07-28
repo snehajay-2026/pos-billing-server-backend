@@ -7,6 +7,7 @@ const fs = require("fs").promises;
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const usersQueries = require("./db/queries/users");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -488,10 +489,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const normalizedEmail = String(email).trim().toLowerCase();
-
-  const users = await readJson(resourceFiles.users);
-  const user = users.find((u) => String(u.email).toLowerCase() === normalizedEmail);
+  const user = await usersQueries.findByEmailWithPassword(email);
   if (!user) {
     req.rateLimit.recordFailure();
     return res.status(401).json({ error: "Invalid email or password" });
@@ -546,8 +544,8 @@ app.get("/api/auth/user", ensureAuth, async (req, res) => {
 });
 
 app.get("/api/register/available", async (req, res) => {
-  const users = await readJson(resourceFiles.users);
-  const available = users.length === 0;
+  const totalUsers = await usersQueries.count();
+  const available = totalUsers === 0;
   res.json({ available, isFirstUser: available });
 });
 
@@ -561,30 +559,34 @@ app.post("/api/register", registerLimiter, async (req, res) => {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+  const totalUsers = await usersQueries.count();
+  const isFirstUser = totalUsers === 0;
+
+  if (await usersQueries.existsByEmail(email)) {
     return res.status(400).json({ error: "Email already exists" });
   }
 
-  const isFirstUser = users.length === 0;
   const hashed = bcrypt.hashSync(password, 10);
-  const now = new Date().toISOString();
-  const newUser = {
-    id: Date.now(),
-    email: String(email).toLowerCase(),
-    password: hashed,
+
+  const created = await usersQueries.create({
+    email,
+    passwordHash: hashed,
     role: isFirstUser ? "SUPER_OWNER" : rest.role || "STORE_ADMIN",
     storeType: isFirstUser ? "system" : String(rest.storeType || "retail"),
     storeId: isFirstUser ? null : rest.storeId || rest.storeType || null,
     approved: true,
     status: "approved",
-    createdAt: now,
-    updatedAt: now,
-    ...rest,
-  };
-  users.push(newUser);
-  await writeJson(resourceFiles.users, users);
-  res.json(sanitizeUser(newUser));
+    name: rest.name || null,
+    phone: rest.phone || null,
+    address: rest.address || null,
+  });
+
+  if (!created) {
+    // UNIQUE constraint race (two concurrent registers). Treat as duplicate.
+    return res.status(400).json({ error: "Email already exists" });
+  }
+
+  res.json(sanitizeUser(created));
 });
 
 const ROLE_MANAGEMENT = {
