@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const usersQueries = require("./db/queries/users");
 const productsQueries = require("./db/queries/products");
+const invoicesQueries = require("./db/queries/invoices");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1004,77 +1005,26 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
     if (err) return res.status(400).json({ error: err });
   }
 
-  const products = await readJson(resourceFiles.products);
-  const productsById = new Map(products.map((p) => [String(p.id), p]));
-
-  // 1. Validate every line item against current stock.
-  for (const item of items) {
-    const product = productsById.get(String(item.id));
-    if (!product) {
-      return res.status(404).json({
-        error: "Product not found",
-        productId: item.id,
-        productName: item.name,
-      });
-    }
-    const requested = resolveCheckoutQuantity(item);
-    if (requested <= 0) {
-      return res.status(400).json({
-        error: "Invalid quantity",
-        productId: item.id,
-        productName: product.name,
-        requested,
-      });
-    }
-    const available = Number(product.stock) || 0;
-    if (available < requested) {
-      return res.status(409).json({
-        error: "Insufficient stock",
-        productId: item.id,
-        productName: product.name,
-        available,
-        requested,
-      });
-    }
+  const scope = getRequestScope(req);
+  try {
+    const result = await invoicesQueries.createWithStockDecrement(
+      invoice,
+      resolveCheckoutQuantity,
+      scope
+    );
+    return res.status(201).json(result);
+  } catch (err) {
+    // Map domain errors thrown by the queries module to HTTP responses.
+    // Anything else is a 500 (handled by the global error handler below).
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message,
+      productId: err.productId,
+      productName: err.productName,
+      requested: err.requested,
+      available: err.available,
+    });
   }
-
-  // 2. Decrement stock and capture updated values for the response.
-  const updatedStock = [];
-  const updatedProducts = products.map((product) => {
-    // Only adjust products that appear as line items.
-    const lineItem = items.find((it) => String(it.id) === String(product.id));
-    if (!lineItem) return product;
-    const requested = resolveCheckoutQuantity(lineItem);
-    const nextStock = +(Number(product.stock) - requested).toFixed(3);
-    updatedStock.push({ id: product.id, name: product.name, stock: nextStock });
-    return {
-      ...product,
-      stock: nextStock,
-      updatedAt: new Date().toISOString(),
-    };
-  });
-
-  // 3. Persist products first (so a crash here leaves no invoice but stock is
-  //    decremented — recoverable). See Part 2b note in the plan.
-  await writeJson(resourceFiles.products, updatedProducts);
-
-  // 4. Persist invoice.
-  const invoices = await readJson(resourceFiles.invoices);
-  const { storeType, storeId, email } = getRequestScope(req);
-  const now = new Date().toISOString();
-  const savedInvoice = {
-    id: Date.now(),
-    createdAt: now,
-    updatedAt: now,
-    ...invoice,
-  };
-  if (storeType) savedInvoice._storeType = storeType;
-  if (storeId) savedInvoice._storeId = storeId;
-  if (email) savedInvoice._userEmail = email;
-  invoices.push(savedInvoice);
-  await writeJson(resourceFiles.invoices, invoices);
-
-  res.status(201).json({ invoice: savedInvoice, updatedStock });
 });
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
