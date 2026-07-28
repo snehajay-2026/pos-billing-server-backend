@@ -10,6 +10,26 @@ const crypto = require("crypto");
 const usersQueries = require("./db/queries/users");
 const productsQueries = require("./db/queries/products");
 const invoicesQueries = require("./db/queries/invoices");
+const servicesQueries = require("./db/queries/services");
+const expensesQueries = require("./db/queries/expenses");
+const ordersQueries = require("./db/queries/orders");
+const customersQueries = require("./db/queries/customers");
+const customerCreditsQueries = require("./db/queries/customer-credits");
+const notificationsQueries = require("./db/queries/notifications");
+
+// Map of MySQL-backed resources to their query modules. The handlers
+// below check this map and short-circuit to the queries module if found.
+// Everything else still falls through to the JSON path.
+const mysqlResources = {
+  products: productsQueries,
+  services: servicesQueries,
+  expenses: expensesQueries,
+  orders: ordersQueries,
+  invoices: invoicesQueries,
+  customers: customersQueries,
+  "customer-credits": customerCreditsQueries,
+  notifications: notificationsQueries,
+};
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1030,10 +1050,11 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   // MySQL-backed resources short-circuit here. Everything else still goes
-  // through the JSON path. Add new MySQL resources by extending this block.
-  if (resource === "products") {
+  // through the JSON path. Add new MySQL resources by extending mysqlResources.
+  const mysqlQueries = mysqlResources[resource];
+  if (mysqlQueries) {
     const scope = getRequestScope(req);
-    const items = await productsQueries.list(scope, req.query);
+    const items = await mysqlQueries.list(scope, req.query);
     return res.json(items);
   }
   const filename = resourceFiles[resource];
@@ -1046,9 +1067,10 @@ app.get("/api/:resource", ensureAuth, async (req, res) => {
 
 app.post("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
-  if (resource === "products") {
+  const mysqlQueries = mysqlResources[resource];
+  if (mysqlQueries) {
     const scope = getRequestScope(req);
-    const created = await productsQueries.create(req.body || {}, scope);
+    const created = await mysqlQueries.create(req.body || {}, scope);
     return res.json(created);
   }
   const filename = resourceFiles[resource];
@@ -1074,11 +1096,19 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
 
 app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
-  if (resource === "products") {
+  const mysqlQueries = mysqlResources[resource];
+  if (mysqlQueries) {
     const scope = getRequestScope(req);
-    const existing = await productsQueries.findByIdScoped(id, scope);
-    if (!existing) return res.status(404).json({ error: "Not found" });
-    const updated = await productsQueries.update(id, req.body || {});
+    if (typeof mysqlQueries.findByIdScoped !== "function") {
+      // Some query modules only expose findById (no scope variant). Fall
+      // back to that — no scope enforcement, matching the JSON path.
+      const existing = await mysqlQueries.findById(id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+    } else {
+      const existing = await mysqlQueries.findByIdScoped(id, scope);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+    }
+    const updated = await mysqlQueries.update(id, req.body || {});
     return res.json(updated);
   }
   const filename = resourceFiles[resource];
@@ -1107,11 +1137,17 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
 
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
-  if (resource === "products") {
+  const mysqlQueries = mysqlResources[resource];
+  if (mysqlQueries) {
     const scope = getRequestScope(req);
-    const existing = await productsQueries.findByIdScoped(id, scope);
-    if (!existing) return res.status(404).json({ error: "Not found" });
-    const deleted = await productsQueries.deleteById(id);
+    if (typeof mysqlQueries.findByIdScoped === "function") {
+      const existing = await mysqlQueries.findByIdScoped(id, scope);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+    } else {
+      const existing = await mysqlQueries.findById(id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+    }
+    const deleted = await mysqlQueries.deleteById(id);
     return res.json({ ok: deleted });
   }
   const filename = resourceFiles[resource];

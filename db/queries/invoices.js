@@ -174,8 +174,95 @@ const list = async (scope) => {
   return rows[0].map(rowToInvoice);
 };
 
+// create: insert a new invoice WITHOUT touching products. Used by
+// /api/:resource POST. The atomic decrement lives in
+// createWithStockDecrement above (used by /api/invoices/checkout).
+const create = async (item, scope) => {
+  const id = Date.now();
+  await query(
+    `INSERT INTO invoices
+       (id, invoice_no, date, items, sub_total, gst_total, grand_total,
+        discount, discount_breakdown, payment_mode, billed_by,
+        _store_type, _store_id, _user_email, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+    [
+      id,
+      item.invoiceNo || item.invoice_no || null,
+      item.date || null,
+      item.items ? JSON.stringify(item.items) : null,
+      toNumber(item.subTotal ?? item.sub_total) ?? 0,
+      toNumber(item.gstTotal ?? item.gst_total) ?? 0,
+      toNumber(item.grandTotal ?? item.grand_total) ?? 0,
+      item.discount ? JSON.stringify(item.discount) : null,
+      item.discountBreakdown ? JSON.stringify(item.discountBreakdown) : null,
+      item.paymentMode || item.payment_mode || null,
+      item.billedBy || item.billed_by || null,
+      scope.storeType || null,
+      scope.storeId || null,
+      scope.email || null,
+    ]
+  );
+  return findByInvoiceNo(item.invoiceNo || item.invoice_no);
+};
+
+const findByIdScoped = async (id, scope) => {
+  const conds = [];
+  const params = [id];
+  if (scope.storeType) { conds.push("_store_type = ?"); params.push(scope.storeType); }
+  if (scope.storeId)   { conds.push("_store_id = ?");   params.push(scope.storeId); }
+  if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
+  const where = conds.length ? "AND " + conds.join(" AND ") : "";
+  const rows = await query(
+    `SELECT ${COLUMNS} FROM invoices WHERE id = ? ${where} LIMIT 1`,
+    params
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToInvoice(rows[0][0]);
+};
+
+const update = async (id, patch) => {
+  const allowed = [
+    "invoice_no", "date", "items", "sub_total", "gst_total", "grand_total",
+    "discount", "discount_breakdown", "payment_mode", "billed_by",
+  ];
+  const camelToSnake = {
+    invoiceNo: "invoice_no", subTotal: "sub_total", gstTotal: "gst_total",
+    grandTotal: "grand_total", discountBreakdown: "discount_breakdown",
+    paymentMode: "payment_mode", billedBy: "billed_by",
+  };
+  const sets = [];
+  const params = [];
+  for (const k of allowed) {
+    const camel = Object.keys(camelToSnake).find((c) => camelToSnake[c] === k) || k;
+    if (!Object.prototype.hasOwnProperty.call(patch, camel)) continue;
+    let v = patch[camel];
+    if (["sub_total", "gst_total", "grand_total"].includes(k)) v = toNumber(v);
+    if (["items", "discount", "discount_breakdown"].includes(k)) v = v ? JSON.stringify(v) : null;
+    sets.push(`\`${k}\` = ?`);
+    params.push(v);
+  }
+  if (!sets.length) {
+    await query("UPDATE invoices SET updated_at = NOW(3) WHERE id = ?", [id]);
+    return findByIdScoped(id, { storeType: null, storeId: null, email: null })
+      .then((inv) => inv || { id });
+  }
+  sets.push("updated_at = NOW(3)");
+  params.push(id);
+  await query(`UPDATE invoices SET ${sets.join(", ")} WHERE id = ?`, params);
+  return findByIdScoped(id, { storeType: null, storeId: null, email: null });
+};
+
+const deleteById = async (id) => {
+  const result = await query("DELETE FROM invoices WHERE id = ?", [id]);
+  return result[0].affectedRows > 0;
+};
+
 module.exports = {
   findByInvoiceNo,
   createWithStockDecrement,
   list,
+  create,
+  findByIdScoped,
+  update,
+  deleteById,
 };

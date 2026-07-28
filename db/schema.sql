@@ -354,6 +354,79 @@ CREATE TABLE IF NOT EXISTS `audit_log` (
   KEY `idx_audit_entity` (`entity_type`, `entity_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- -----------------------------------------------------------------------------
+-- 14. customers
+-- -----------------------------------------------------------------------------
+-- Source: server/data/customers.json
+-- Notes: Free-form CRM-ish fields. Name + phone are the only "real" columns;
+--   the rest is just whatever the frontend has been storing.
+CREATE TABLE IF NOT EXISTS `customers` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `name` VARCHAR(255) NULL,
+  `phone` VARCHAR(64) NULL,
+  `email` VARCHAR(255) NULL,
+  `address` TEXT NULL,
+  `notes` TEXT NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_customers_store` (`_store_type`, `_store_id`),
+  KEY `idx_customers_user` (`_user_email`),
+  KEY `idx_customers_phone` (`phone`),
+  KEY `idx_customers_email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 15. customer_credits
+-- -----------------------------------------------------------------------------
+-- Source: server/data/customerCredits.json
+-- Notes: Each row is a credit balance tied to a customer (by phone) for a
+--   specific store scope. amount is DECIMAL because it represents money.
+CREATE TABLE IF NOT EXISTS `customer_credits` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `customer_phone` VARCHAR(64) NULL,
+  `customer_name` VARCHAR(255) NULL,
+  `amount` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  `description` TEXT NULL,
+  `date` DATE NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_credits_store` (`_store_type`, `_store_id`),
+  KEY `idx_credits_user` (`_user_email`),
+  KEY `idx_credits_phone` (`customer_phone`),
+  KEY `idx_credits_date` (`date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 16. notifications
+-- -----------------------------------------------------------------------------
+-- Source: server/data/notifications.json
+-- Notes: User-scoped activity feed (password-reset requests, system events).
+--   `payload` is JSON for forward-compat with whatever fields future
+--   notification writers want to attach.
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `read_flag` TINYINT(1) NOT NULL DEFAULT 0,
+  `email` VARCHAR(255) NULL,
+  `type` VARCHAR(64) NULL,
+  `message` TEXT NULL,
+  `payload` JSON NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_notifications_user` (`_user_email`),
+  KEY `idx_notifications_email` (`email`),
+  KEY `idx_notifications_read` (`read_flag`),
+  KEY `idx_notifications_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- =============================================================================
 -- END
 -- =============================================================================
