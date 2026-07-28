@@ -8,6 +8,7 @@ const path = require("path");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const usersQueries = require("./db/queries/users");
+const productsQueries = require("./db/queries/products");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -1078,6 +1079,13 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
+  // MySQL-backed resources short-circuit here. Everything else still goes
+  // through the JSON path. Add new MySQL resources by extending this block.
+  if (resource === "products") {
+    const scope = getRequestScope(req);
+    const items = await productsQueries.list(scope, req.query);
+    return res.json(items);
+  }
   const filename = resourceFiles[resource];
   if (!filename) {
     return res.status(404).json({ error: "Not found" });
@@ -1088,6 +1096,11 @@ app.get("/api/:resource", ensureAuth, async (req, res) => {
 
 app.post("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
+  if (resource === "products") {
+    const scope = getRequestScope(req);
+    const created = await productsQueries.create(req.body || {}, scope);
+    return res.json(created);
+  }
   const filename = resourceFiles[resource];
   if (!filename) {
     return res.status(404).json({ error: "Not found" });
@@ -1111,6 +1124,13 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
 
 app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
+  if (resource === "products") {
+    const scope = getRequestScope(req);
+    const existing = await productsQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    const updated = await productsQueries.update(id, req.body || {});
+    return res.json(updated);
+  }
   const filename = resourceFiles[resource];
   if (!filename) {
     return res.status(404).json({ error: "Not found" });
@@ -1137,6 +1157,13 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
 
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
+  if (resource === "products") {
+    const scope = getRequestScope(req);
+    const existing = await productsQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    const deleted = await productsQueries.deleteById(id);
+    return res.json({ ok: deleted });
+  }
   const filename = resourceFiles[resource];
   if (!filename) {
     return res.status(404).json({ error: "Not found" });
