@@ -324,5 +324,4005 @@
     "_storeType": "service",
     "_storeId": "11",
     "_userEmail": "meena@gmail.com"
+  },
+  {
+    "id": 1782997596669,
+    "createdAt": "2026-07-02T13:06:36.669Z",
+    "updatedAt": "2026-07-02T13:06:36.669Z",
+    "invoiceNo": "INV-3ea468",
+    "date": "2026-07-02",
+    "items": [
+      {
+        "id": 1782995140042,
+        "createdAt": "2026-07-02T12:25:40.042Z",
+        "updatedAt": "2026-07-02T12:25:40.042Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Beverages",
+        "unit": "unit",
+        "_storeType": "hotel",
+        "_storeId": "H1",
+        "_userEmail": "sneha@gmail.com",
+        "qty": 1,
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 200,
+    "gstTotal": 24,
+    "grandTotal": 224,
+    "paymentMode": "Cash",
+    "billedBy": "sneha@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "sneha@gmail.com"
+  },
+  {
+    "id": 1783062222941,
+    "createdAt": "2026-07-03T07:03:42.941Z",
+    "updatedAt": "2026-07-03T07:03:42.941Z",
+    "invoiceNo": "INV-2eff64",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1782995003990,
+        "createdAt": "2026-07-02T12:23:23.990Z",
+        "updatedAt": "2026-07-02T12:23:23.990Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Beverages",
+        "unit": "unit",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 2,
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 400,
+    "gstTotal": 48,
+    "grandTotal": 448,
+    "paymentMode": "UPI",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783070807745,
+    "createdAt": "2026-07-03T09:26:47.737Z",
+    "updatedAt": "2026-07-03T09:26:47.745Z",
+    "invoiceNo": "HINV-1783070807737",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Ajay Kodag",
+          "customerMobile": "3564644366",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "egegee3535"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "14:48"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Ajay Kodag",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "egegee3535"
+      }
+    },
+    "customerName": "Ajay Kodag",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783070991540,
+    "createdAt": "2026-07-03T09:29:51.540Z",
+    "updatedAt": "2026-07-03T09:29:51.540Z",
+    "invoiceNo": "INV-5c2295",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T07:03:53.850Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Beverages",
+        "unit": "unit",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 3,
+        "qtyKg": 3
+      },
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T07:03:53.887Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Beverages",
+        "unit": "unit",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 2,
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 1000,
+    "gstTotal": 120,
+    "grandTotal": 1120,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783071867447,
+    "createdAt": "2026-07-03T09:44:27.442Z",
+    "updatedAt": "2026-07-03T09:44:27.447Z",
+    "invoiceNo": "HINV-1783071867442",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 1,
+        "rate": 350,
+        "total": 350,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "03:14 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "Ajay",
+          "partySize": 1,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "03:14 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 350,
+    "gstTotal": 17.5,
+    "grandTotal": 367.5,
+    "total": 367.5,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "Ajay",
+      "partySize": 1,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "03:14 PM",
+      "checkOutTime": "03:14 PM",
+      "orderSummary": "1x Fry Chicken Thali"
+    },
+    "customerName": "Ajay",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783075716821,
+    "createdAt": "2026-07-03T10:48:36.813Z",
+    "updatedAt": "2026-07-03T10:48:36.821Z",
+    "invoiceNo": "HINV-1783075716813",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ajay kodag",
+          "customerMobile": "8237865747",
+          "notes": "",
+          "idProof": {
+            "type": "Voter ID",
+            "number": "rgre466"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "16:17"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ajay kodag",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Voter ID",
+        "number": "rgre466"
+      }
+    },
+    "customerName": "ajay kodag",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783075717062,
+    "createdAt": "2026-07-03T10:48:37.041Z",
+    "updatedAt": "2026-07-03T10:48:37.062Z",
+    "invoiceNo": "HINV-1783075717041",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ajay kodag",
+          "customerMobile": "8237865747",
+          "notes": "",
+          "idProof": {
+            "type": "Voter ID",
+            "number": "rgre466"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "16:17"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ajay kodag",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Voter ID",
+        "number": "rgre466"
+      }
+    },
+    "customerName": "ajay kodag",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783075811731,
+    "createdAt": "2026-07-03T10:50:11.725Z",
+    "updatedAt": "2026-07-03T10:50:11.731Z",
+    "invoiceNo": "HINV-1783075811725",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 3,
+        "rate": 350,
+        "total": 1050,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "04:19 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "kkk",
+          "partySize": 1,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "04:19 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1050,
+    "gstTotal": 52.5,
+    "grandTotal": 1102.5,
+    "total": 1102.5,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "kkk",
+      "partySize": 1,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "04:19 PM",
+      "checkOutTime": "04:19 PM",
+      "orderSummary": "3x Fry Chicken Thali"
+    },
+    "customerName": "kkk",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783076103646,
+    "createdAt": "2026-07-03T10:55:03.646Z",
+    "updatedAt": "2026-07-03T10:55:03.646Z",
+    "invoiceNo": "SI2026-103636",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 2,
+        "name": "Repair",
+        "description": "Device repair and maintenance",
+        "rate": 300,
+        "gst": 18,
+        "hours": 1,
+        "price": 300,
+        "qtyKg": 1
+      },
+      {
+        "id": 1,
+        "name": "Consulting",
+        "description": "Business consulting services",
+        "rate": 500,
+        "gst": 18,
+        "hours": 2,
+        "price": 500,
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 800,
+    "gstTotal": 144,
+    "grandTotal": 944,
+    "paymentMode": "Cash",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783076293219,
+    "createdAt": "2026-07-03T10:58:13.212Z",
+    "updatedAt": "2026-07-03T10:58:13.219Z",
+    "invoiceNo": "HINV-1783076293212",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Kartok kodag",
+          "customerMobile": "9533993939",
+          "notes": "",
+          "idProof": {
+            "type": "Voter ID",
+            "number": "877666yyy"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "16:02"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Kartok kodag",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Voter ID",
+        "number": "877666yyy"
+      }
+    },
+    "customerName": "Kartok kodag",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783076580243,
+    "createdAt": "2026-07-03T11:03:00.243Z",
+    "updatedAt": "2026-07-03T11:03:00.243Z",
+    "invoiceNo": "INV-506554",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T09:37:07.786Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T09:36:16.329Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 300,
+    "gstTotal": 29,
+    "grandTotal": 329,
+    "paymentMode": "UPI",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783080767733,
+    "createdAt": "2026-07-03T12:12:47.733Z",
+    "updatedAt": "2026-07-03T12:12:47.733Z",
+    "invoiceNo": "INV-a91212",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T09:37:07.786Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 400,
+    "gstTotal": 48,
+    "grandTotal": 448,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783080842937,
+    "createdAt": "2026-07-03T12:14:02.905Z",
+    "updatedAt": "2026-07-03T12:14:02.937Z",
+    "invoiceNo": "HINV-1783080842904",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "kartik k",
+          "customerMobile": "7555544444",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "jfffy655"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "17:43"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "kartik k",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "jfffy655"
+      }
+    },
+    "customerName": "kartik k",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081679694,
+    "createdAt": "2026-07-03T12:27:59.688Z",
+    "updatedAt": "2026-07-03T12:27:59.694Z",
+    "invoiceNo": "HINV-1783081679688",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Ak",
+          "customerMobile": "3535532535",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "rgwe3435"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "17:43"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 48,
+    "grandTotal": 1248,
+    "total": 1248,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Ak",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "rgwe3435"
+      }
+    },
+    "customerName": "Ak",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081679995,
+    "createdAt": "2026-07-03T12:27:59.954Z",
+    "updatedAt": "2026-07-03T12:27:59.995Z",
+    "invoiceNo": "HINV-1783081679954",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Ak",
+          "customerMobile": "3535532535",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "rgwe3435"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "17:43"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 48,
+    "grandTotal": 1248,
+    "total": 1248,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Ak",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "rgwe3435"
+      }
+    },
+    "customerName": "Ak",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081783409,
+    "createdAt": "2026-07-03T12:29:43.409Z",
+    "updatedAt": "2026-07-03T12:29:43.409Z",
+    "invoiceNo": "INV-1097af",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T12:12:36.652Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 3
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 7.5,
+    "grandTotal": 157.5,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081783437,
+    "createdAt": "2026-07-03T12:29:43.437Z",
+    "updatedAt": "2026-07-03T12:29:43.437Z",
+    "invoiceNo": "INV-70548a",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T12:12:36.652Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 3
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 7.5,
+    "grandTotal": 157.5,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081799593,
+    "createdAt": "2026-07-03T12:29:59.593Z",
+    "updatedAt": "2026-07-03T12:29:59.593Z",
+    "invoiceNo": "INV-f9ea1a",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T12:12:36.652Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 5,
+    "grandTotal": 105,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081819461,
+    "createdAt": "2026-07-03T12:30:19.461Z",
+    "updatedAt": "2026-07-03T12:30:19.461Z",
+    "invoiceNo": "INV-aecebc",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1782995003979,
+        "createdAt": "2026-07-02T12:23:23.979Z",
+        "updatedAt": "2026-07-02T12:23:23.979Z",
+        "name": "Oil",
+        "price": 120,
+        "gst": 12,
+        "stock": 30,
+        "barcode": "1234567890124",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 240,
+    "gstTotal": 28.8,
+    "grandTotal": 268.8,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783081895550,
+    "createdAt": "2026-07-03T12:31:33.647Z",
+    "updatedAt": "2026-07-03T12:31:35.550Z",
+    "invoiceNo": "HINV-1783081893647",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 2,
+        "rate": 350,
+        "total": 700,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "06:01 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "sk",
+          "partySize": 1,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "06:01 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 700,
+    "gstTotal": 35,
+    "grandTotal": 735,
+    "total": 735,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "sk",
+      "partySize": 1,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "06:01 PM",
+      "checkOutTime": "06:01 PM",
+      "orderSummary": "2x Fry Chicken Thali"
+    },
+    "customerName": "sk",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083122716,
+    "createdAt": "2026-07-03T12:52:02.720Z",
+    "updatedAt": "2026-07-03T12:52:02.716Z",
+    "invoiceNo": "HINV-1783083122720",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "kk",
+          "customerMobile": "4546364366",
+          "notes": "",
+          "idProof": {
+            "type": "Voter ID",
+            "number": "bfderh46"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:12"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "kk",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Voter ID",
+        "number": "bfderh46"
+      }
+    },
+    "customerName": "kk",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083149554,
+    "createdAt": "2026-07-03T12:52:29.554Z",
+    "updatedAt": "2026-07-03T12:52:29.554Z",
+    "invoiceNo": "INV-b5dd76",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T12:12:36.652Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 50,
+    "gstTotal": 2.5,
+    "grandTotal": 52.5,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083174362,
+    "createdAt": "2026-07-03T12:52:54.361Z",
+    "updatedAt": "2026-07-03T12:52:54.361Z",
+    "invoiceNo": "INV-358245",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T12:29:58.074Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 400,
+    "gstTotal": 48,
+    "grandTotal": 448,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083258515,
+    "createdAt": "2026-07-03T12:54:18.508Z",
+    "updatedAt": "2026-07-03T12:54:18.515Z",
+    "invoiceNo": "HINV-1783083258508",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ak",
+          "customerMobile": "4335464754",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "effwwwe45"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:23"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ak",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "effwwwe45"
+      }
+    },
+    "customerName": "ak",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083825104,
+    "createdAt": "2026-07-03T13:03:45.097Z",
+    "updatedAt": "2026-07-03T13:03:45.104Z",
+    "invoiceNo": "HINV-1783083825097",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "KK",
+          "customerMobile": "2525235525",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "3253252tetew"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:23"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "KK",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "3253252tetew"
+      }
+    },
+    "customerName": "KK",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783083825655,
+    "createdAt": "2026-07-03T13:03:45.379Z",
+    "updatedAt": "2026-07-03T13:03:45.655Z",
+    "invoiceNo": "HINV-1783083825379",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "KK",
+          "customerMobile": "2525235525",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "3253252tetew"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:23"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "KK",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "3253252tetew"
+      }
+    },
+    "customerName": "KK",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084020471,
+    "createdAt": "2026-07-03T13:07:00.466Z",
+    "updatedAt": "2026-07-03T13:07:00.471Z",
+    "invoiceNo": "HINV-1783084020466",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 3,
+        "rate": 350,
+        "total": 1050,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "06:36 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "Ajay",
+          "partySize": 1,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "06:36 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1050,
+    "gstTotal": 52.5,
+    "grandTotal": 1102.5,
+    "total": 1102.5,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "Ajay",
+      "partySize": 1,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "06:36 PM",
+      "checkOutTime": "06:36 PM",
+      "orderSummary": "3x Fry Chicken Thali"
+    },
+    "customerName": "Ajay",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084074839,
+    "createdAt": "2026-07-03T13:07:54.833Z",
+    "updatedAt": "2026-07-03T13:07:54.839Z",
+    "invoiceNo": "HINV-1783084074833",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Aj",
+          "customerMobile": "5235325353",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "324232tg"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:23"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Aj",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "324232tg"
+      }
+    },
+    "customerName": "Aj",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084075133,
+    "createdAt": "2026-07-03T13:07:55.032Z",
+    "updatedAt": "2026-07-03T13:07:55.133Z",
+    "invoiceNo": "HINV-1783084075032",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Aj",
+          "customerMobile": "5235325353",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "324232tg"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:23"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Aj",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "324232tg"
+      }
+    },
+    "customerName": "Aj",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084130228,
+    "createdAt": "2026-07-03T13:08:50.228Z",
+    "updatedAt": "2026-07-03T13:08:50.228Z",
+    "invoiceNo": "INV-915b6b",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-03T12:12:36.652Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 5,
+    "grandTotal": 105,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084484537,
+    "createdAt": "2026-07-03T13:14:44.537Z",
+    "updatedAt": "2026-07-03T13:14:44.537Z",
+    "invoiceNo": "INV-7138ac",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783084332218,
+        "createdAt": "2026-07-03T13:12:12.218Z",
+        "updatedAt": "2026-07-03T13:12:12.218Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 50,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 50,
+    "gstTotal": 2.5,
+    "grandTotal": 52.5,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084484564,
+    "createdAt": "2026-07-03T13:14:44.564Z",
+    "updatedAt": "2026-07-03T13:14:44.564Z",
+    "invoiceNo": "INV-59aa81",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783084332218,
+        "createdAt": "2026-07-03T13:12:12.218Z",
+        "updatedAt": "2026-07-03T13:12:12.218Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 50,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 50,
+    "gstTotal": 2.5,
+    "grandTotal": 52.5,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783084993209,
+    "createdAt": "2026-07-03T13:23:13.209Z",
+    "updatedAt": "2026-07-03T13:23:13.209Z",
+    "invoiceNo": "INV-7823ee",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783084555150,
+        "createdAt": "2026-07-03T13:15:55.150Z",
+        "updatedAt": "2026-07-03T13:15:55.150Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 50,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "kodag@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 5,
+    "grandTotal": 105,
+    "paymentMode": "Cash",
+    "billedBy": "kodag@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "kodag@gmail.com"
+  },
+  {
+    "id": 1783085045090,
+    "createdAt": "2026-07-03T13:24:05.090Z",
+    "updatedAt": "2026-07-03T13:24:05.090Z",
+    "invoiceNo": "INV-954bc1",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783085031142,
+        "createdAt": "2026-07-03T13:23:51.142Z",
+        "updatedAt": "2026-07-03T13:23:51.142Z",
+        "name": "oil",
+        "price": 130,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "123445667",
+        "category": "Groceries",
+        "hsn": "585858",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "kodag@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783084555150,
+        "createdAt": "2026-07-03T13:15:55.150Z",
+        "updatedAt": "2026-07-03T13:23:11.423Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 48,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "kodag@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 180,
+    "gstTotal": 9,
+    "grandTotal": 189,
+    "paymentMode": "Cash",
+    "billedBy": "kodag@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "kodag@gmail.com"
+  },
+  {
+    "id": 1783085179188,
+    "createdAt": "2026-07-03T13:26:19.186Z",
+    "updatedAt": "2026-07-03T13:26:19.188Z",
+    "invoiceNo": "HINV-1783085179186",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ak",
+          "customerMobile": "3131424242",
+          "notes": "",
+          "idProof": {
+            "type": "Driving License",
+            "number": "24242wrr"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "18:55"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 48,
+    "grandTotal": 1248,
+    "total": 1248,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ak",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Driving License",
+        "number": "24242wrr"
+      }
+    },
+    "customerName": "ak",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783085267541,
+    "createdAt": "2026-07-03T13:27:47.541Z",
+    "updatedAt": "2026-07-03T13:27:47.541Z",
+    "invoiceNo": "INV-8a3d84",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783084468345,
+        "createdAt": "2026-07-03T13:14:28.345Z",
+        "updatedAt": "2026-07-03T13:27:37.011Z",
+        "name": "oil",
+        "price": 130,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "1234455",
+        "category": "Groceries",
+        "hsn": "99886",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 260,
+    "gstTotal": 13,
+    "grandTotal": 273,
+    "paymentMode": "UPI",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783085331223,
+    "createdAt": "2026-07-03T13:28:51.218Z",
+    "updatedAt": "2026-07-03T13:28:51.223Z",
+    "invoiceNo": "HINV-1783085331218",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 2,
+        "rate": 350,
+        "total": 700,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "06:58 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "ak",
+          "partySize": 1,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "06:58 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 700,
+    "gstTotal": 35,
+    "grandTotal": 735,
+    "total": 735,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "ak",
+      "partySize": 1,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "06:58 PM",
+      "checkOutTime": "06:58 PM",
+      "orderSummary": "2x Fry Chicken Thali"
+    },
+    "customerName": "ak",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783086770340,
+    "createdAt": "2026-07-03T13:52:50.340Z",
+    "updatedAt": "2026-07-03T13:52:50.340Z",
+    "invoiceNo": "INV-9b473a",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783086609377,
+        "createdAt": "2026-07-03T13:50:09.377Z",
+        "updatedAt": "2026-07-03T13:50:09.377Z",
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783086743972,
+        "createdAt": "2026-07-03T13:52:23.972Z",
+        "updatedAt": "2026-07-03T13:52:23.972Z",
+        "name": "Ironing - Shirt",
+        "price": 20,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "1234567890125",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 190,
+    "gstTotal": 9.5,
+    "grandTotal": 199.5,
+    "paymentMode": "UPI",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783086865381,
+    "createdAt": "2026-07-03T13:54:25.381Z",
+    "updatedAt": "2026-07-03T13:54:25.381Z",
+    "invoiceNo": "INV-10d397",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783086609377,
+        "createdAt": "2026-07-03T13:50:09.377Z",
+        "updatedAt": "2026-07-03T13:52:46.033Z",
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 5,
+        "stock": 998,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 2
+      },
+      {
+        "id": 1783086743972,
+        "createdAt": "2026-07-03T13:52:23.972Z",
+        "updatedAt": "2026-07-03T13:52:46.040Z",
+        "name": "Ironing - Shirt",
+        "price": 20,
+        "gst": 5,
+        "stock": 997,
+        "barcode": "1234567890125",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 320,
+    "gstTotal": 16,
+    "grandTotal": 336,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783087080867,
+    "createdAt": "2026-07-03T13:58:00.867Z",
+    "updatedAt": "2026-07-03T13:58:00.867Z",
+    "invoiceNo": "INV-32b8cb",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783087024394,
+        "createdAt": "2026-07-03T13:57:04.394Z",
+        "updatedAt": "2026-07-03T13:57:52.070Z",
+        "name": "Ironing - Shirt",
+        "price": 20,
+        "gst": 5,
+        "stock": 997,
+        "barcode": "1234567890125",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "sk@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 40,
+    "gstTotal": 2,
+    "grandTotal": 42,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "sk@gmail.com"
+  },
+  {
+    "id": 1783087192390,
+    "createdAt": "2026-07-03T13:59:52.390Z",
+    "updatedAt": "2026-07-03T13:59:52.390Z",
+    "invoiceNo": "INV-db6171",
+    "date": "2026-07-03",
+    "items": [
+      {
+        "id": 1783087175869,
+        "createdAt": "2026-07-03T13:59:35.869Z",
+        "updatedAt": "2026-07-03T13:59:35.869Z",
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "1234567890123",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ak@gmail.com",
+        "qtyKg": 2
+      },
+      {
+        "id": 1783087175883,
+        "createdAt": "2026-07-03T13:59:35.883Z",
+        "updatedAt": "2026-07-03T13:59:35.883Z",
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 12,
+        "stock": 999,
+        "barcode": "1234567890124",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ak@gmail.com",
+        "qtyKg": 2
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 39,
+    "grandTotal": 539,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ak@gmail.com"
+  },
+  {
+    "id": 1783088626068,
+    "createdAt": "2026-07-03T14:23:46.061Z",
+    "updatedAt": "2026-07-03T14:23:46.068Z",
+    "invoiceNo": "HINV-1783088626060",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "guest": "ajay",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "tewtwtewt"
+          }
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ajay",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "tewtwtewt"
+      }
+    },
+    "customerName": "ajay",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783096528161,
+    "createdAt": "2026-07-03T16:35:28.155Z",
+    "updatedAt": "2026-07-03T16:35:28.161Z",
+    "invoiceNo": "HINV-1783096528155",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 1,
+        "rate": 350,
+        "total": 350,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "10:05 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "Ajay Kodag",
+          "partySize": 2,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "10:04 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 350,
+    "gstTotal": 17.5,
+    "grandTotal": 367.5,
+    "total": 367.5,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "Ajay Kodag",
+      "partySize": 2,
+      "checkInDate": "2026-07-03",
+      "checkInTime": "10:04 PM",
+      "checkOutTime": "10:05 PM",
+      "orderSummary": "1x Fry Chicken Thali"
+    },
+    "customerName": "Ajay Kodag",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783096739276,
+    "createdAt": "2026-07-03T16:38:59.268Z",
+    "updatedAt": "2026-07-03T16:38:59.276Z",
+    "invoiceNo": "HINV-1783096739268",
+    "date": "2026-07-03",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ajay",
+          "customerMobile": "4424224144",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "tewtwtewt"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ajay",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "tewtwtewt"
+      }
+    },
+    "customerName": "ajay",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783096819776,
+    "createdAt": "2026-07-03T16:40:19.769Z",
+    "updatedAt": "2026-07-03T16:40:19.776Z",
+    "invoiceNo": "HINV-1783096819769",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 102",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R102",
+          "roomName": "Room 102",
+          "guest": "ak",
+          "customerMobile": "2442244424",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "sdfsf"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "Non-AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "22:09"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ak",
+      "roomNumber": "Room 102",
+      "idProof": {
+        "type": "Passport",
+        "number": "sdfsf"
+      }
+    },
+    "customerName": "ak",
+    "customerId": "Room 102",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783096900624,
+    "createdAt": "2026-07-03T16:41:40.617Z",
+    "updatedAt": "2026-07-03T16:41:40.624Z",
+    "invoiceNo": "HINV-1783096900617",
+    "date": "2026-07-03",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 102",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R102",
+          "roomName": "Room 102",
+          "guest": "Aj",
+          "customerMobile": "1313313113",
+          "notes": "",
+          "idProof": {
+            "type": "Voter ID",
+            "number": "24424"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "Non-AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-03",
+          "checkInTime": "22:09"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Aj",
+      "roomNumber": "Room 102",
+      "idProof": {
+        "type": "Voter ID",
+        "number": "24424"
+      }
+    },
+    "customerName": "Aj",
+    "customerId": "Room 102",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783144452870,
+    "createdAt": "2026-07-04T05:54:12.863Z",
+    "updatedAt": "2026-07-04T05:54:12.870Z",
+    "invoiceNo": "HINV-1783144452863",
+    "date": "2026-07-04",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Paneer masala",
+        "qty": 2,
+        "rate": 150,
+        "total": 300,
+        "gst": 0,
+        "category": "Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "11:24 AM",
+          "productId": 1783144386124,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "ag",
+          "partySize": 1,
+          "checkInDate": "2026-07-04",
+          "checkInTime": "11:24 AM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 300,
+    "gstTotal": 15,
+    "grandTotal": 315,
+    "total": 315,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "ag",
+      "partySize": 1,
+      "checkInDate": "2026-07-04",
+      "checkInTime": "11:24 AM",
+      "checkOutTime": "11:24 AM",
+      "orderSummary": "2x Paneer masala"
+    },
+    "customerName": "ag",
+    "customerId": "Table 1",
+    "billedBy": "bhosale@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "bhosale@gmail.com"
+  },
+  {
+    "id": 1783144510836,
+    "createdAt": "2026-07-04T05:55:10.825Z",
+    "updatedAt": "2026-07-04T05:55:10.836Z",
+    "invoiceNo": "HINV-1783144510825",
+    "date": "2026-07-04",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "ajay",
+          "customerMobile": "8383838383",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "ytttf7665"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-04",
+          "checkInTime": "11:24"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "ajay",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "ytttf7665"
+      }
+    },
+    "customerName": "ajay",
+    "customerId": "Room 101",
+    "billedBy": "bhosale@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "bhosale@gmail.com"
+  },
+  {
+    "id": 1783414333467,
+    "createdAt": "2026-07-07T08:52:13.461Z",
+    "updatedAt": "2026-07-07T08:52:13.467Z",
+    "invoiceNo": "HINV-1783414333461",
+    "date": "2026-07-07",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 1,
+        "rate": 350,
+        "total": 350,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "02:22 PM",
+          "productId": 1783071662080,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "agg",
+          "partySize": 1,
+          "checkInDate": "2026-07-07",
+          "checkInTime": "02:21 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 350,
+    "gstTotal": 17.5,
+    "grandTotal": 367.5,
+    "total": 367.5,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "agg",
+      "partySize": 1,
+      "checkInDate": "2026-07-07",
+      "checkInTime": "02:21 PM",
+      "checkOutTime": "02:22 PM",
+      "orderSummary": "1x Fry Chicken Thali"
+    },
+    "customerName": "agg",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "H1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783422698238,
+    "createdAt": "2026-07-07T11:11:38.238Z",
+    "updatedAt": "2026-07-07T11:11:38.238Z",
+    "invoiceNo": "INV-408721",
+    "date": "2026-07-07",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783415497462,
+        "createdAt": "2026-07-07T09:11:37.462Z",
+        "updatedAt": "2026-07-07T09:11:37.462Z",
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 12,
+        "stock": 999,
+        "barcode": "LD-DC-SHIRT",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "New Laundry",
+        "_userEmail": "akshay@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 100,
+    "gstTotal": 12,
+    "grandTotal": 112,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "New Laundry",
+    "_userEmail": "akshay@gmail.com"
+  },
+  {
+    "id": 1783422953457,
+    "createdAt": "2026-07-07T11:15:53.457Z",
+    "updatedAt": "2026-07-07T11:15:53.457Z",
+    "invoiceNo": "INV-3258f1",
+    "date": "2026-07-07",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783415286142,
+        "createdAt": "2026-07-07T09:08:06.142Z",
+        "updatedAt": "2026-07-07T10:55:59.671Z",
+        "name": "Ironing - Saree",
+        "price": 80,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-IR-SAREE",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "New Laundry",
+        "_userEmail": "akshay@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 80,
+    "gstTotal": 4,
+    "grandTotal": 84,
+    "paymentMode": "Cash",
+    "_storeType": "laundry",
+    "_storeId": "New Laundry",
+    "_userEmail": "akshay@gmail.com"
+  },
+  {
+    "id": 1783580521873,
+    "createdAt": "2026-07-09T07:02:01.873Z",
+    "updatedAt": "2026-07-09T07:02:01.873Z",
+    "invoiceNo": "INV-2df94e",
+    "date": "2026-07-09",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T13:08:48.924Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 200,
+    "gstTotal": 24,
+    "grandTotal": 224,
+    "paymentMode": "Cash",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783580549045,
+    "createdAt": "2026-07-09T07:02:29.045Z",
+    "updatedAt": "2026-07-09T07:02:29.045Z",
+    "invoiceNo": "INV-e9b2af",
+    "date": "2026-07-09",
+    "items": [
+      {
+        "id": 1783084332218,
+        "createdAt": "2026-07-03T13:12:12.218Z",
+        "updatedAt": "2026-07-03T13:12:12.218Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 50,
+        "barcode": "1234567890123",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783084468345,
+        "createdAt": "2026-07-03T13:14:28.345Z",
+        "updatedAt": "2026-07-03T13:27:43.810Z",
+        "name": "oil",
+        "price": 130,
+        "gst": 5,
+        "stock": 98,
+        "barcode": "1234455",
+        "category": "Groceries",
+        "hsn": "99886",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "R11",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 180,
+    "gstTotal": 9,
+    "grandTotal": 189,
+    "paymentMode": "UPI",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "R11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783585563696,
+    "createdAt": "2026-07-09T08:26:03.696Z",
+    "updatedAt": "2026-07-09T08:26:03.696Z",
+    "invoiceNo": "INV-3bf64f",
+    "date": "2026-07-09",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": "seed-0.14559043908265346",
+        "name": "Washing",
+        "qty": 1,
+        "price": 50,
+        "gst": 5
+      }
+    ],
+    "subTotal": 50,
+    "gstTotal": 2.5,
+    "grandTotal": 52.5,
+    "paymentMode": "UPI",
+    "customer": "ajay kodag",
+    "customerPhone": "9552813906",
+    "token": "LD-0001",
+    "expectedReturn": "2026-07-10",
+    "orderId": 1783585488908,
+    "_storeType": "laundry",
+    "_storeId": "New Laundry",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783602897673,
+    "createdAt": "2026-07-09T13:14:57.667Z",
+    "updatedAt": "2026-07-09T13:14:57.673Z",
+    "invoiceNo": "HINV-1783602897667",
+    "date": "2026-07-09",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "aj",
+          "customerMobile": "2423432235",
+          "notes": "",
+          "idProof": {
+            "type": "Aadhar",
+            "number": "dsgsg"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "18:25"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "aj",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Aadhar",
+        "number": "dsgsg"
+      }
+    },
+    "customerName": "aj",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783610665777,
+    "createdAt": "2026-07-09T15:24:25.771Z",
+    "updatedAt": "2026-07-09T15:24:25.777Z",
+    "invoiceNo": "HINV-1783610665771",
+    "date": "2026-07-09",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "aj",
+          "customerMobile": "1312421444",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "efwwtwe424"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "18:25"
+        }
+      },
+      {
+        "name": "Room Booking - Room 102",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R102",
+          "roomName": "Room 102",
+          "guest": "kk",
+          "customerMobile": "3124242424",
+          "notes": "",
+          "idProof": {
+            "type": "Aadhar",
+            "number": "gdgshsdhsd"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "Non-AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "18:29"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 2400,
+    "gstTotal": 60,
+    "grandTotal": 2460,
+    "total": 2460,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "aj",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "efwwtwe424"
+      }
+    },
+    "customerName": "aj",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783618780091,
+    "createdAt": "2026-07-09T17:39:40.083Z",
+    "updatedAt": "2026-07-09T17:39:40.091Z",
+    "invoiceNo": "HINV-1783618780083",
+    "date": "2026-07-09",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 1,
+        "rate": 300,
+        "total": 300,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "11:09 PM",
+          "productId": 1783341509166,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "ajay",
+          "partySize": 1,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "11:09 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 300,
+    "gstTotal": 15,
+    "grandTotal": 315,
+    "total": 315,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "ajay",
+      "partySize": 1,
+      "checkInDate": "2026-07-09",
+      "checkInTime": "11:09 PM",
+      "checkOutTime": "11:09 PM",
+      "orderSummary": "1x Fry Chicken Thali"
+    },
+    "customerName": "ajay",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783618845543,
+    "createdAt": "2026-07-09T17:40:45.537Z",
+    "updatedAt": "2026-07-09T17:40:45.543Z",
+    "invoiceNo": "HINV-1783618845537",
+    "date": "2026-07-09",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Fry Chicken Thali",
+        "qty": 1,
+        "rate": 300,
+        "total": 300,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "11:10 PM",
+          "productId": 1783341509166,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "ajay",
+          "partySize": 1,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "11:10 PM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 300,
+    "gstTotal": 15,
+    "grandTotal": 315,
+    "total": 315,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "ajay",
+      "partySize": 1,
+      "checkInDate": "2026-07-09",
+      "checkInTime": "11:10 PM",
+      "checkOutTime": "11:10 PM",
+      "orderSummary": "1x Fry Chicken Thali"
+    },
+    "customerName": "ajay",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783624608180,
+    "createdAt": "2026-07-09T19:16:47.783Z",
+    "updatedAt": "2026-07-09T19:16:48.180Z",
+    "invoiceNo": "HINV-1783624607783",
+    "date": "2026-07-09",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Chicken Tikka Masala",
+        "qty": 1,
+        "rate": 340,
+        "total": 340,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "12:46 AM",
+          "productId": 1783622047302,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "Sneha",
+          "partySize": 2,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "12:44 AM"
+        }
+      },
+      {
+        "name": "Tandoori Chicken (Half)",
+        "qty": 1,
+        "rate": 320,
+        "total": 320,
+        "gst": 0,
+        "category": "Non Veg Menu",
+        "type": "dining",
+        "meta": {
+          "tableId": "T1",
+          "checkOutTime": "12:46 AM",
+          "productId": 1783622047319,
+          "variant": "regular",
+          "variantLabel": "Regular",
+          "source": "clear-table-booking-menu",
+          "tableName": "Table 1",
+          "guest": "Sneha",
+          "partySize": 2,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "12:44 AM"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 660,
+    "gstTotal": 33,
+    "grandTotal": 693,
+    "total": 693,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "tableId": "T1",
+      "tableName": "Table 1",
+      "guestName": "Sneha",
+      "partySize": 2,
+      "checkInDate": "2026-07-09",
+      "checkInTime": "12:44 AM",
+      "checkOutTime": "12:46 AM",
+      "orderSummary": "1x Chicken Tikka Masala, 1x Tandoori Chicken (Half)"
+    },
+    "customerName": "Sneha",
+    "customerId": "Table 1",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783672008668,
+    "createdAt": "2026-07-10T08:26:48.663Z",
+    "updatedAt": "2026-07-10T08:26:48.668Z",
+    "invoiceNo": "HINV-1783672008663",
+    "date": "2026-07-10",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1260,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "guest": "Ajay Kodag",
+          "notes": "",
+          "idProof": {
+            "type": "Aadhar",
+            "number": "14124242421"
+          }
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1260,
+    "gstTotal": 60,
+    "grandTotal": 1320,
+    "total": 1320,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Ajay Kodag",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Aadhar",
+        "number": "14124242421"
+      }
+    },
+    "customerName": "Ajay Kodag",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783761553578,
+    "createdAt": "2026-07-11T09:19:13.578Z",
+    "updatedAt": "2026-07-11T09:19:13.578Z",
+    "invoiceNo": "INV-6cd8ef",
+    "date": "2026-07-11",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783580432794,
+        "createdAt": "2026-07-09T07:00:32.794Z",
+        "updatedAt": "2026-07-09T07:00:32.794Z",
+        "name": "Dry Cleaning - Shirt",
+        "price": 100,
+        "gst": 12,
+        "stock": 999,
+        "barcode": "LD-DC-SHIRT",
+        "category": "Dry Cleaning",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 2
+      }
+    ],
+    "subTotal": 200,
+    "gstTotal": 24,
+    "grandTotal": 224,
+    "paymentMode": "Cash",
+    "customer": "",
+    "customerPhone": "",
+    "token": "LD-0001",
+    "expectedReturn": "2026-07-12",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783761629649,
+    "createdAt": "2026-07-11T09:20:29.649Z",
+    "updatedAt": "2026-07-11T09:20:29.649Z",
+    "invoiceNo": "INV-c47c1c",
+    "date": "2026-07-11",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783581745457,
+        "createdAt": "2026-07-09T07:22:25.457Z",
+        "updatedAt": "2026-07-09T07:22:25.457Z",
+        "name": "Steam Iron - Shirt",
+        "price": 25,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-SI-SHIRT",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 25,
+    "gstTotal": 1.25,
+    "grandTotal": 26.25,
+    "paymentMode": "UPI",
+    "customer": "ajay",
+    "customerPhone": "1232323331",
+    "token": "LD-0002",
+    "expectedReturn": "2026-07-12",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783761678441,
+    "createdAt": "2026-07-11T09:21:18.441Z",
+    "updatedAt": "2026-07-11T09:21:18.441Z",
+    "invoiceNo": "INV-588f3f",
+    "date": "2026-07-11",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783580456421,
+        "createdAt": "2026-07-09T07:00:56.421Z",
+        "updatedAt": "2026-07-09T07:00:56.421Z",
+        "name": "Shoe Cleaning",
+        "price": 150,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-SHOE",
+        "category": "Special Care",
+        "_storeType": "laundry",
+        "_storeId": "LD1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 7.5,
+    "grandTotal": 157.5,
+    "paymentMode": "Cash",
+    "customer": "Ak",
+    "customerPhone": "4124242421",
+    "token": "LD-0003",
+    "expectedReturn": "2026-07-12",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "LD1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783765354634,
+    "createdAt": "2026-07-11T10:22:34.634Z",
+    "updatedAt": "2026-07-11T10:22:34.634Z",
+    "invoiceNo": "SI2026-354621",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 3,
+        "name": "Training",
+        "description": "Employee training session",
+        "rate": 800,
+        "gst": 18,
+        "hours": 3,
+        "price": 800,
+        "category": "Other",
+        "qty": 1
+      }
+    ],
+    "subTotal": 800,
+    "gstTotal": 144,
+    "discountPct": 10,
+    "discountAmt": 94.4,
+    "grandTotal": 849.6,
+    "paymentMode": "UPI",
+    "customer": "Ajay Kodag",
+    "customerPhone": "334444",
+    "customerEmail": "kodag.ajay@gmail.com",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "anuj@gmail.com"
+  },
+  {
+    "id": 1783765428149,
+    "createdAt": "2026-07-11T10:23:48.149Z",
+    "updatedAt": "2026-07-11T10:23:48.149Z",
+    "invoiceNo": "SI2026-428137",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 1,
+        "name": "Consulting",
+        "description": "Business consulting services",
+        "rate": 500,
+        "gst": 18,
+        "hours": 2,
+        "price": 500,
+        "category": "Other",
+        "qty": 1
+      },
+      {
+        "id": 3,
+        "name": "Training",
+        "description": "Employee training session",
+        "rate": 800,
+        "gst": 18,
+        "hours": 3,
+        "price": 800,
+        "category": "Other",
+        "qty": 1
+      }
+    ],
+    "subTotal": 1300,
+    "gstTotal": 234,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 1534,
+    "paymentMode": "Cash",
+    "customer": "kk",
+    "customerPhone": "",
+    "customerEmail": "",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "anuj@gmail.com"
+  },
+  {
+    "id": 1783769003123,
+    "createdAt": "2026-07-11T11:23:23.123Z",
+    "updatedAt": "2026-07-11T11:23:23.123Z",
+    "invoiceNo": "SI2026-003115",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 1783768941748,
+        "createdAt": "2026-07-11T11:22:21.748Z",
+        "updatedAt": "2026-07-11T11:22:21.748Z",
+        "name": "Ink",
+        "description": "Delivery",
+        "rate": 500,
+        "hours": 2,
+        "gst": 18,
+        "category": "Other",
+        "_storeType": "service",
+        "_storeId": "Anuj-Service",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "price": 500
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 90,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 590,
+    "paymentMode": "UPI",
+    "customer": "Ajay Kodag",
+    "customerPhone": "",
+    "customerEmail": "kodag.ajay@gmail.com",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783771396514,
+    "createdAt": "2026-07-11T12:03:16.493Z",
+    "updatedAt": "2026-07-11T12:03:16.514Z",
+    "invoiceNo": "HINV-1783771396493",
+    "date": "2026-07-11",
+    "paymentMode": "UPI",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "aj",
+          "customerMobile": "5555555555",
+          "notes": "",
+          "idProof": {
+            "type": "Aadhar",
+            "number": "kjhh"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 60,
+    "grandTotal": 1260,
+    "total": 1260,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "aj",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Aadhar",
+        "number": "kjhh"
+      }
+    },
+    "customerName": "aj",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783771908836,
+    "createdAt": "2026-07-11T12:11:48.835Z",
+    "updatedAt": "2026-07-11T12:11:48.835Z",
+    "invoiceNo": "SI2026-908823",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 1783768941748,
+        "createdAt": "2026-07-11T11:22:21.748Z",
+        "updatedAt": "2026-07-11T11:22:21.748Z",
+        "name": "Ink",
+        "description": "Delivery",
+        "rate": 500,
+        "hours": 2,
+        "gst": 18,
+        "category": "Other",
+        "_storeType": "service",
+        "_storeId": "Anuj-Service",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "price": 500
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 90,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 590,
+    "paymentMode": "UPI",
+    "customer": "Ajay Kodag",
+    "customerPhone": "",
+    "customerEmail": "kodag.ajay@gmail.com",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783772061740,
+    "createdAt": "2026-07-11T12:14:21.740Z",
+    "updatedAt": "2026-07-11T12:14:21.740Z",
+    "invoiceNo": "SI2026-061729",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 1783768941748,
+        "createdAt": "2026-07-11T11:22:21.748Z",
+        "updatedAt": "2026-07-11T11:22:21.748Z",
+        "name": "Ink",
+        "description": "Delivery",
+        "rate": 500,
+        "hours": 2,
+        "gst": 18,
+        "category": "Other",
+        "_storeType": "service",
+        "_storeId": "Anuj-Service",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "price": 500
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 90,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 590,
+    "paymentMode": "Cash",
+    "customer": "Ajay Kodag",
+    "customerPhone": "",
+    "customerEmail": "kodag.ajay@gmail.com",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1783778133557,
+    "createdAt": "2026-07-11T13:55:33.557Z",
+    "updatedAt": "2026-07-11T13:55:33.557Z",
+    "invoiceNo": "SI2026-133526",
+    "date": "2026-07-11",
+    "items": [
+      {
+        "id": 1783768941748,
+        "createdAt": "2026-07-11T11:22:21.748Z",
+        "updatedAt": "2026-07-11T11:22:21.748Z",
+        "name": "Ink",
+        "description": "Delivery",
+        "rate": 500,
+        "hours": 2,
+        "gst": 18,
+        "category": "Other",
+        "_storeType": "service",
+        "_storeId": "Anuj-Service",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "price": 500
+      }
+    ],
+    "subTotal": 500,
+    "gstTotal": 90,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 590,
+    "paymentMode": "Cash",
+    "customer": "Ajay Kodag",
+    "customerName": "Ajay Kodag",
+    "customerPhone": "",
+    "customerEmail": "kodag.ajay@gmail.com",
+    "customerAddress": "Flat No:- H-1307, Pristine Pacific, Behind D-mart, Ambegaon bk",
+    "customerGst": "2424rwqrqweq",
+    "customerState": "Maharashtra",
+    "technician": "service",
+    "jobRef": "",
+    "serviceFrom": "2026-07-11",
+    "serviceTo": "",
+    "remarks": "",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784106476651,
+    "createdAt": "2026-07-15T09:07:56.651Z",
+    "updatedAt": "2026-07-15T09:07:56.651Z",
+    "invoiceNo": "INV-efbf25",
+    "date": "2026-07-15",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T13:08:48.924Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 200,
+    "gstTotal": 24,
+    "grandTotal": 224,
+    "paymentMode": "UPI",
+    "customerName": "",
+    "customerPhone": "",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784107024398,
+    "createdAt": "2026-07-15T09:17:04.398Z",
+    "updatedAt": "2026-07-15T09:17:04.398Z",
+    "invoiceNo": "INV-50bc4c",
+    "date": "2026-07-15",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-03T13:08:48.924Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 15,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783071033289,
+        "createdAt": "2026-07-03T09:30:33.289Z",
+        "updatedAt": "2026-07-09T07:01:57.752Z",
+        "name": "Moong Dal",
+        "price": 100,
+        "gst": 5,
+        "stock": 100,
+        "barcode": "1234",
+        "category": "Groceries",
+        "hsn": "66633",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 300,
+    "gstTotal": 29,
+    "grandTotal": 329,
+    "paymentMode": "UPI",
+    "customerName": "",
+    "customerPhone": "",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784110067636,
+    "createdAt": "2026-07-15T10:07:47.636Z",
+    "updatedAt": "2026-07-15T10:07:47.636Z",
+    "invoiceNo": "INV-daed7e",
+    "date": "2026-07-15",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783789618770,
+        "createdAt": "2026-07-11T17:06:58.770Z",
+        "updatedAt": "2026-07-11T17:06:58.770Z",
+        "name": "Wash and Fold - 5kg",
+        "price": 150,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-WF-5KG",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1,
+        "manualPrice": true
+      }
+    ],
+    "subTotal": 150,
+    "gstTotal": 7.5,
+    "grandTotal": 157.5,
+    "paymentMode": "UPI",
+    "customer": "Ajay",
+    "customerPhone": "4124144141",
+    "token": "m",
+    "expectedReturn": "2026-07-16",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784110097499,
+    "createdAt": "2026-07-15T10:08:17.499Z",
+    "updatedAt": "2026-07-15T10:08:17.499Z",
+    "invoiceNo": "INV-c0bada",
+    "date": "2026-07-15",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783789596197,
+        "createdAt": "2026-07-11T17:06:36.196Z",
+        "updatedAt": "2026-07-11T17:06:36.196Z",
+        "name": "Stain Removal",
+        "price": 60,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-STAIN",
+        "category": "Add-on",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 60,
+    "gstTotal": 3,
+    "grandTotal": 63,
+    "paymentMode": "Cash",
+    "customer": "",
+    "customerPhone": "",
+    "token": "LD-0001",
+    "expectedReturn": "2026-07-16",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784172261521,
+    "createdAt": "2026-07-16T03:24:21.519Z",
+    "updatedAt": "2026-07-16T03:24:21.520Z",
+    "invoiceNo": "HINV-1784172261519",
+    "date": "2026-07-16",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "aaa",
+          "customerMobile": "1331313133",
+          "notes": "",
+          "idProof": {
+            "type": "Aadhar",
+            "number": "13313eweew"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-09",
+          "checkInTime": "08:52"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 0,
+    "grandTotal": 1200,
+    "total": 1200,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "aaa",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Aadhar",
+        "number": "13313eweew"
+      }
+    },
+    "customerName": "aaa",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784292720708,
+    "createdAt": "2026-07-17T12:52:00.506Z",
+    "updatedAt": "2026-07-17T12:52:00.707Z",
+    "invoiceNo": "HINV-1784292720506",
+    "date": "2026-07-17",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Extra Hours Charges",
+        "qty": 8,
+        "rate": 500,
+        "total": 4000,
+        "gst": 0,
+        "category": "Lodging",
+        "type": "lodging",
+        "meta": {
+          "kind": "late_checkout",
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "lateMinutes": 439,
+          "hours": 8,
+          "rate": 500,
+          "updatedAt": "2026-07-17T12:48:37.476Z"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 4000,
+    "gstTotal": 0,
+    "grandTotal": 4000,
+    "total": 4000,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "roomNumber": "Room 101"
+    },
+    "customerName": "Hotel Guest",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784292858162,
+    "createdAt": "2026-07-17T12:54:18.155Z",
+    "updatedAt": "2026-07-17T12:54:18.162Z",
+    "invoiceNo": "HINV-1784292858155",
+    "date": "2026-07-17",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Extra Hours Charges",
+        "qty": 8,
+        "rate": 500,
+        "total": 4000,
+        "gst": 0,
+        "category": "Lodging",
+        "type": "lodging",
+        "meta": {
+          "kind": "late_checkout",
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "lateMinutes": 444,
+          "hours": 8,
+          "rate": 500,
+          "updatedAt": "2026-07-17T12:54:15.140Z"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 4000,
+    "gstTotal": 0,
+    "grandTotal": 4000,
+    "total": 4000,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "roomNumber": "Room 101"
+    },
+    "customerName": "Hotel Guest",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784295114562,
+    "createdAt": "2026-07-17T13:31:54.555Z",
+    "updatedAt": "2026-07-17T13:31:54.562Z",
+    "invoiceNo": "HINV-1784295114555",
+    "date": "2026-07-17",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Extra Hours Charges",
+        "qty": 33,
+        "rate": 500,
+        "total": 16500,
+        "gst": 0,
+        "category": "Lodging",
+        "type": "lodging",
+        "meta": {
+          "kind": "late_checkout",
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "lateMinutes": 1921,
+          "hours": 33,
+          "rate": 500,
+          "updatedAt": "2026-07-17T13:30:37.122Z"
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 16500,
+    "gstTotal": 0,
+    "grandTotal": 16500,
+    "total": 16500,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "roomNumber": "Room 101"
+    },
+    "customerName": "Hotel Guest",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784534076630,
+    "createdAt": "2026-07-20T07:54:36.630Z",
+    "updatedAt": "2026-07-20T07:54:36.630Z",
+    "invoiceNo": "INV-335226",
+    "date": "2026-07-20",
+    "storeType": "laundry",
+    "items": [
+      {
+        "id": 1783785075035,
+        "createdAt": "2026-07-11T15:51:15.035Z",
+        "updatedAt": "2026-07-11T15:51:15.035Z",
+        "name": "Shoe Cleaning",
+        "price": 150,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-SHOE",
+        "category": "Special Care",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      },
+      {
+        "id": 1783761509679,
+        "createdAt": "2026-07-11T09:18:29.679Z",
+        "updatedAt": "2026-07-11T09:18:29.679Z",
+        "name": "Wash and Iron - 5kg",
+        "price": 220,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-WI-5KG",
+        "category": "Washing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      },
+      {
+        "id": 1783761482487,
+        "createdAt": "2026-07-11T09:18:02.487Z",
+        "updatedAt": "2026-07-11T09:18:02.487Z",
+        "name": "Ironing - Saree",
+        "price": 80,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-IR-SAREE",
+        "category": "Ironing",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      },
+      {
+        "id": 1783597235443,
+        "createdAt": "2026-07-09T11:40:35.443Z",
+        "updatedAt": "2026-07-09T11:40:35.443Z",
+        "name": "Curtain Wash - Panel",
+        "price": 120,
+        "gst": 5,
+        "stock": 999,
+        "barcode": "LD-CURTAIN",
+        "category": "Household",
+        "_storeType": "laundry",
+        "_storeId": "branch 01,Ambegaon",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qty": 1
+      }
+    ],
+    "subTotal": 570,
+    "gstTotal": 28.5,
+    "grandTotal": 598.5,
+    "paymentMode": "Cash",
+    "customer": "",
+    "customerPhone": "",
+    "token": "LD-0001",
+    "expectedReturn": "2026-07-21",
+    "orderId": "",
+    "_storeType": "laundry",
+    "_storeId": "branch 01,Ambegaon",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784554078818,
+    "createdAt": "2026-07-20T13:27:58.803Z",
+    "updatedAt": "2026-07-20T13:27:58.818Z",
+    "invoiceNo": "HINV-1784554078803",
+    "date": "2026-07-20",
+    "paymentMode": "Cash",
+    "items": [
+      {
+        "name": "Room Booking - Room 101",
+        "qty": 1,
+        "rate": 1200,
+        "total": 1200,
+        "gst": 0,
+        "type": "lodging",
+        "meta": {
+          "roomId": "R101",
+          "roomName": "Room 101",
+          "guest": "Ajay",
+          "customerMobile": "1241412421",
+          "notes": "",
+          "idProof": {
+            "type": "Passport",
+            "number": "1441214"
+          },
+          "nights": 1,
+          "roomRate": 1200,
+          "roomAc": "AC",
+          "roomModern": false,
+          "checkInDate": "2026-07-20",
+          "checkInTime": "12:00",
+          "checkOutDate": "2026-07-21",
+          "checkOutTime": "11:00",
+          "gst": 12
+        }
+      }
+    ],
+    "notes": "",
+    "subTotal": 1200,
+    "gstTotal": 144,
+    "grandTotal": 1344,
+    "total": 1344,
+    "storeType": "hotel",
+    "hotelDetails": {
+      "guestName": "Ajay",
+      "roomNumber": "Room 101",
+      "idProof": {
+        "type": "Passport",
+        "number": "1441214"
+      }
+    },
+    "customerName": "Ajay",
+    "customerId": "Room 101",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "hotel",
+    "_storeId": "restro",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784557508879,
+    "createdAt": "2026-07-20T14:25:08.879Z",
+    "updatedAt": "2026-07-20T14:25:08.879Z",
+    "invoiceNo": "INV-CAP-OK",
+    "items": [
+      {
+        "id": 1782995140042,
+        "name": "Tea",
+        "qty": 1,
+        "qtyKg": 1,
+        "unit": "unit",
+        "price": 200,
+        "gst": 12
+      }
+    ],
+    "discount": {
+      "type": "percent",
+      "value": 50
+    },
+    "_storeType": "system",
+    "_storeId": "system",
+    "_userEmail": "sliced@test.com"
+  },
+  {
+    "id": 1784559269288,
+    "createdAt": "2026-07-20T14:54:29.287Z",
+    "updatedAt": "2026-07-20T14:54:29.287Z",
+    "invoiceNo": "INV-880781",
+    "date": "2026-07-20",
+    "items": [
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-15T13:13:09.702Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 14,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 200,
+    "gstTotal": 24,
+    "grandTotal": 224,
+    "paymentMode": "UPI",
+    "discountBreakdown": {
+      "line": [],
+      "bill": null,
+      "totalSavings": 0
+    },
+    "customerName": "Ajay Kodag",
+    "customerPhone": "",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784559727641,
+    "createdAt": "2026-07-20T15:02:07.641Z",
+    "updatedAt": "2026-07-20T15:02:07.641Z",
+    "invoiceNo": "INV-e27723",
+    "date": "2026-07-20",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-15T13:13:09.720Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 99,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 45,
+    "gstTotal": 2.25,
+    "grandTotal": 47.25,
+    "paymentMode": "Split",
+    "payments": [
+      {
+        "mode": "Cash",
+        "amount": 40
+      },
+      {
+        "mode": "UPI",
+        "amount": 7.25
+      }
+    ],
+    "tendered": 47.25,
+    "changeDue": 0,
+    "discount": {
+      "type": "flat",
+      "value": 5
+    },
+    "discountBreakdown": {
+      "line": [],
+      "bill": {
+        "type": "flat",
+        "value": 5
+      },
+      "totalSavings": 5
+    },
+    "customerName": "S Kodag",
+    "customerPhone": "",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784560079241,
+    "createdAt": "2026-07-20T15:07:59.241Z",
+    "updatedAt": "2026-07-20T15:07:59.241Z",
+    "invoiceNo": "SI2026-079229",
+    "date": "2026-07-20",
+    "items": [
+      {
+        "id": 2,
+        "name": "Repair",
+        "description": "Device repair and maintenance",
+        "rate": 300,
+        "gst": 18,
+        "hours": 1,
+        "price": 300,
+        "category": "Other"
+      }
+    ],
+    "subTotal": 300,
+    "gstTotal": 54,
+    "discountPct": 5,
+    "discountAmt": 17.7,
+    "grandTotal": 336.3,
+    "paymentMode": "UPI",
+    "status": "pending",
+    "customer": "Ajay P Kodag",
+    "customerName": "Ajay P Kodag",
+    "customerPhone": "08237865747",
+    "customerEmail": "ajaykodag47@gmail.com",
+    "customerAddress": "",
+    "customerGst": "",
+    "customerState": "",
+    "technician": "",
+    "jobRef": "",
+    "serviceFrom": "2026-07-20",
+    "serviceTo": "",
+    "remarks": "",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784564265612,
+    "createdAt": "2026-07-20T16:17:45.612Z",
+    "updatedAt": "2026-07-20T16:17:45.612Z",
+    "invoiceNo": "INV-4d9c1e",
+    "date": "2026-07-20",
+    "items": [
+      {
+        "id": 1783062233887,
+        "createdAt": "2026-07-03T07:03:53.887Z",
+        "updatedAt": "2026-07-15T13:13:09.720Z",
+        "name": "Rice",
+        "price": 50,
+        "gst": 5,
+        "stock": 99,
+        "barcode": "123456789012",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "hsn": "34rrrrf",
+        "qtyKg": 1
+      },
+      {
+        "id": 1783062233850,
+        "createdAt": "2026-07-03T07:03:53.850Z",
+        "updatedAt": "2026-07-20T14:54:29.280Z",
+        "name": "Tea",
+        "price": 200,
+        "gst": 12,
+        "stock": 13,
+        "barcode": "1234567890127",
+        "category": "Groceries",
+        "unit": "kg",
+        "_storeType": "retail",
+        "_storeId": "1",
+        "_userEmail": "ajaykodag47@gmail.com",
+        "qtyKg": 1
+      }
+    ],
+    "subTotal": 245,
+    "gstTotal": 25.97,
+    "grandTotal": 270.97,
+    "paymentMode": "Split",
+    "payments": [
+      {
+        "mode": "Cash",
+        "amount": 270.97
+      }
+    ],
+    "tendered": 270.97,
+    "changeDue": 0,
+    "discount": {
+      "type": "flat",
+      "value": 5
+    },
+    "discountBreakdown": {
+      "line": [],
+      "bill": {
+        "type": "flat",
+        "value": 5
+      },
+      "totalSavings": 5
+    },
+    "customerName": "S Kodag",
+    "customerPhone": "",
+    "billedBy": "ajaykodag47@gmail.com",
+    "_storeType": "retail",
+    "_storeId": "1",
+    "_userEmail": "ajaykodag47@gmail.com"
+  },
+  {
+    "id": 1784565380249,
+    "createdAt": "2026-07-20T16:36:20.249Z",
+    "updatedAt": "2026-07-20T16:36:20.249Z",
+    "invoiceNo": "SI2026-380235",
+    "date": "2026-07-20",
+    "items": [
+      {
+        "id": 2,
+        "name": "Repair",
+        "description": "Device repair and maintenance",
+        "rate": 300,
+        "gst": 18,
+        "hours": 1,
+        "price": 300,
+        "category": "Other"
+      },
+      {
+        "id": 1,
+        "name": "Consulting",
+        "description": "Business consulting services",
+        "rate": 500,
+        "gst": 18,
+        "hours": 2,
+        "price": 500,
+        "category": "Other"
+      }
+    ],
+    "subTotal": 800,
+    "gstTotal": 144,
+    "discountPct": 0,
+    "discountAmt": 0,
+    "grandTotal": 944,
+    "paymentMode": "UPI",
+    "status": "pending",
+    "customer": "Ajay P Kodag",
+    "customerName": "Ajay P Kodag",
+    "customerPhone": "08237865747",
+    "customerEmail": "ajaykodag47@gmail.com",
+    "customerAddress": "",
+    "customerGst": "",
+    "customerState": "",
+    "technician": "",
+    "jobRef": "",
+    "serviceFrom": "2026-07-20",
+    "serviceTo": "",
+    "remarks": "",
+    "_storeType": "service",
+    "_storeId": "11",
+    "_userEmail": "ajaykodag47@gmail.com"
   }
 ]

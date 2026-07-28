@@ -1,0 +1,22 @@
+[
+  {
+    "sessionId": "484604e41759789e4711dbc8fe27c7fc422c7d77ef2e5315",
+    "userId": 1781449344155,
+    "expiresAt": 1785300145047
+  },
+  {
+    "sessionId": "4deea7a0869dff57b86686a940904956f4ae26ce8deea5ae",
+    "userId": 1781449344155,
+    "expiresAt": 1785300145047
+  },
+  {
+    "sessionId": "35ccf26ce3137bcf1a6428f1344b9ed33939592607048e75",
+    "userId": 1781449344155,
+    "expiresAt": 1785300145047
+  },
+  {
+    "sessionId": "0da09bd42c51e9b23edd3a96c8ab994f1e7742fabd57e783",
+    "userId": 1781449344155,
+    "expiresAt": 1785300145047
+  }
+]

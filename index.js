@@ -1,1088 +1,1189 @@
-const dotenv = require('dotenv');
-dotenv.config();
-const crypto = require('crypto');
-const express = require('express');
-const cors = require('cors');
-const session = require('express-session');
-const bcrypt = require('bcryptjs');
-const path = require('path');
-const fs = require('fs');
+
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const fs = require("fs").promises;
+const path = require("path");
+const bcrypt = require("bcryptjs");
+const crypto = require("crypto");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const DATA_DIR = path.join(__dirname, 'data');
-const BCRYPT_SALT_ROUNDS = Number(process.env.BCRYPT_SALT_ROUNDS) || 10;
-const LOGIN_ATTEMPT_WINDOW_MS = Number(process.env.LOGIN_ATTEMPT_WINDOW_MS) || 15 * 60 * 1000;
-const MAX_LOGIN_ATTEMPTS = Number(process.env.MAX_LOGIN_ATTEMPTS) || 5;
-const PASSWORD_RESET_EXPIRY_MS = Number(process.env.PASSWORD_RESET_EXPIRY_MS) || 60 * 60 * 1000;
-const ENABLE_REGISTRATION = process.env.ENABLE_REGISTRATION === 'true';
-const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY || "";
-const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || "no-reply@yourdomain.com";
-const APP_URL = process.env.APP_URL || "http://localhost:3000";
-const NOTIFICATIONS_FILE = 'notifications.json';
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
+const DATA_DIR = path.join(__dirname, "data");
 
-const loginAttempts = new Map();
+const isAllowedOrigin = (origin) => {
+  if (!origin) return false;
 
-app.set('trust proxy', 1);
-app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
-app.use(
-  session({
-    name: 'pos_session',
-    secret: process.env.SESSION_SECRET || 'pos-billing-secret',
-    resave: false,
-    saveUninitialized: false,
-    rolling: true,
-    cookie: {
-      maxAge: 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-    },
-  })
-);
-
-const ensureDataDir = () => {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-};
-
-const readData = (filename, defaultValue = []) => {
-  ensureDataDir();
-  const filepath = path.join(DATA_DIR, filename);
-  if (!fs.existsSync(filepath)) {
-    fs.writeFileSync(filepath, JSON.stringify(defaultValue, null, 2));
-    return defaultValue;
-  }
-  const raw = fs.readFileSync(filepath, 'utf8');
   try {
-    return JSON.parse(raw);
-  } catch (err) {
-    return defaultValue;
-  }
-};
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname;
+    const protocol = parsed.protocol;
 
-const writeData = (filename, data) => {
-  ensureDataDir();
-  const filepath = path.join(DATA_DIR, filename);
-  fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
-};
+    if (origin === FRONTEND_ORIGIN) {
+      return true;
+    }
 
-const addNotification = (notification) => {
-  const notifications = readData(NOTIFICATIONS_FILE, []);
-  notifications.unshift({
-    id: Date.now(),
-    createdAt: new Date().toISOString(),
-    read: false,
-    ...notification,
-  });
-  writeData(NOTIFICATIONS_FILE, notifications);
-};
+    if ((hostname === "localhost" || hostname === "127.0.0.1") && (protocol === "http:" || protocol === "https:")) {
+      return true;
+    }
 
-const isEmailEnabled = Boolean(SENDGRID_API_KEY && SENDGRID_FROM_EMAIL);
-
-let sgMail;
-if (isEmailEnabled) {
-  sgMail = require('@sendgrid/mail');
-  sgMail.setApiKey(SENDGRID_API_KEY);
-}
-
-const sendPasswordResetEmail = async (email, token) => {
-  if (!isEmailEnabled) {
     return false;
-  }
-
-  const resetUrl = `${APP_URL.replace(/\/$/, '')}/password-reset`;
-  const message = {
-    to: email,
-    from: SENDGRID_FROM_EMAIL,
-    subject: 'Reset your password',
-    text: `You requested a password reset. Use this code to continue:\n\n${token}\n\nVisit ${resetUrl} to complete the reset.`,
-    html: `<p>You requested a password reset.</p><p>Use this code to continue:</p><p><strong>${token}</strong></p><p>Visit <a href="${resetUrl}">${resetUrl}</a> to complete the reset.</p>`,
-  };
-
-  await sgMail.send(message);
-  return true;
-};
-
-const markNotificationRead = (id) => {
-  const notifications = readData(NOTIFICATIONS_FILE, []);
-  const updated = notifications.map((note) => note.id === id ? { ...note, read: true } : note);
-  writeData(NOTIFICATIONS_FILE, updated);
-};
-
-const parseJson = (value) => {
-  if (typeof value !== 'string') return value;
-  try {
-    return JSON.parse(value);
   } catch {
-    return value;
-  }
-};
-
-const getSessionUser = (req) => {
-  return req.session && req.session.user ? req.session.user : null;
-};
-
-const getUserMeta = (req) => {
-  const sessionUser = getSessionUser(req);
-  return {
-    role: sessionUser?.role || 'GUEST',
-    storeType: sessionUser?.storeType || 'nostore',
-    storeId: sessionUser?.storeId || sessionUser?.storeType || null,
-    email: sessionUser?.email || 'nouser',
-    ownerEmail: sessionUser?.ownerEmail || null,
-    rootOwnerEmail: sessionUser?.rootOwnerEmail || sessionUser?.ownerEmail || null,
-  };
-};
-
-const requireSecureSession = (req, res, next) => {
-  if (!req.session || !req.session.user) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  if (req.session.user.lockedUntil && new Date(req.session.user.lockedUntil) > new Date()) {
-    return res.status(423).json({ error: 'Account temporarily locked due to failed login attempts' });
-  }
-  next();
-};
-
-const getUserScope = (userMeta) => {
-  return userMeta?.storeId || userMeta?.storeType || null;
-};
-
-const isRole = (req, allowed) => {
-  const user = getSessionUser(req);
-  return user && allowed.includes(user.role);
-};
-
-const SUPPORTED_USER_ROLES = ['SUPER_OWNER', 'STORE_ADMIN', 'ADMIN', 'CASHIER'];
-const STORE_ADMIN_ROLES = ['SUPER_OWNER', 'STORE_ADMIN', 'ADMIN'];
-const USER_MANAGER_ROLES = ['SUPER_OWNER', 'STORE_ADMIN', 'ADMIN'];
-const USER_VIEWER_ROLES = ['SUPER_OWNER', 'STORE_ADMIN', 'ADMIN'];
-
-const isSuperOwner = (req) => isRole(req, ['SUPER_OWNER']);
-const isStoreLevelAdmin = (req) => isRole(req, STORE_ADMIN_ROLES);
-const isAdminOnly = (req) => isRole(req, ['ADMIN']);
-const isStoreAdminOnly = (req) => isRole(req, ['STORE_ADMIN']);
-const canManageUsers = (req) => isRole(req, USER_MANAGER_ROLES);
-const canViewUsers = (req) => isRole(req, USER_VIEWER_ROLES);
-
-const requireRole = (allowed) => (req, res, next) => {
-  if (!req.session?.user || !allowed.includes(req.session.user.role)) {
-    return res.status(403).json({ error: 'Access denied' });
-  }
-  next();
-};
-
-const requireStoreManager = requireRole(STORE_ADMIN_ROLES);
-const requireCashierOrAbove = requireRole(SUPPORTED_USER_ROLES);
-
-const requireAdmin = (req, res, next) => {
-  if (!isStoreLevelAdmin(req)) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  next();
-};
-
-const requireUserManager = (req, res, next) => {
-  if (!canManageUsers(req)) {
-    return res.status(403).json({ error: 'User management access required' });
-  }
-  next();
-};
-
-const requireUserViewer = (req, res, next) => {
-  if (!canViewUsers(req)) {
-    return res.status(403).json({ error: 'User view access required' });
-  }
-  next();
-};
-
-const getLoginKey = (req) => `${req.ip}:${String(req.body.email || '').toLowerCase()}`;
-
-const isLoginBlocked = (req) => {
-  const key = getLoginKey(req);
-  const entry = loginAttempts.get(key);
-  if (!entry) return false;
-  const age = Date.now() - entry.firstAttemptAt;
-  if (age > LOGIN_ATTEMPT_WINDOW_MS) {
-    loginAttempts.delete(key);
     return false;
   }
-  return entry.count >= MAX_LOGIN_ATTEMPTS;
 };
 
-const getLoginLockMessage = (req) => {
-  const key = getLoginKey(req);
-  const entry = loginAttempts.get(key);
-  if (!entry) return null;
-  const remaining = Math.max(0, LOGIN_ATTEMPT_WINDOW_MS - (Date.now() - entry.firstAttemptAt));
-  return `Too many login attempts. Try again in ${Math.ceil(remaining / 60000)} minute(s).`;
+const resourceFiles = {
+  users: "users.json",
+  products: "products.json",
+  services: "services.json",
+  expenses: "expenses.json",
+  orders: "orders.json",
+  invoices: "invoices.json",
+  notifications: "notifications.json",
+  "customer-credits": "customerCredits.json",
+  customers: "customers.json",
+  "store-settings": "storeSettings.json",
 };
 
-const recordLoginAttempt = (req, success) => {
-  const key = getLoginKey(req);
-  const entry = loginAttempts.get(key) || { count: 0, firstAttemptAt: Date.now() };
-  if (success) {
-    loginAttempts.delete(key);
-    return;
-  }
-  if (Date.now() - entry.firstAttemptAt > LOGIN_ATTEMPT_WINDOW_MS) {
-    entry.count = 0;
-    entry.firstAttemptAt = Date.now();
-  }
-  entry.count += 1;
-  entry.lastAttemptAt = new Date().toISOString();
+const hotelStoreDefaults = {
+  tables: [],
+  waiting: [],
+  diningWaiting: [],
+  lodgingWaiting: [],
+  checkoutHistory: [],
+  diningBills: [],
+};
 
-  const email = String(req.body.email || '').toLowerCase();
-  const users = readData('users.json', []);
-  const index = users.findIndex((u) => String(u.email).toLowerCase() === email);
-  if (index >= 0 && entry.count >= MAX_LOGIN_ATTEMPTS) {
-    users[index] = {
-      ...users[index],
-      lockedUntil: new Date(Date.now() + LOGIN_ATTEMPT_WINDOW_MS).toISOString(),
-      updatedAt: new Date().toISOString(),
+// hotelStore is loaded from server/data/hotel.json at startup so tables, waiting
+// lists, dining bills, and checkout history survive server restarts. Mutating
+// handlers MUST call persistHotelStore() after their in-memory update.
+const hotelStore = { ...hotelStoreDefaults };
+
+const loadHotelStore = async () => {
+  let stored = {};
+  try {
+    stored = await readJson("hotel.json");
+  } catch (err) {
+    // ENOENT → first boot, no persisted state yet. Any other error has already
+    // been logged by readJson's corruption handler; fall back to defaults so
+    // the server still boots.
+    if (err && err.code !== "ENOENT") {
+      console.error("Failed to load hotel.json; using empty defaults.");
+    }
+  }
+  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+    for (const key of Object.keys(hotelStoreDefaults)) {
+      if (Array.isArray(stored[key])) {
+        hotelStore[key] = stored[key];
+      }
+    }
+  }
+};
+
+const persistHotelStore = () => writeJson("hotel.json", hotelStore);
+
+const hotelResourceMap = {
+  "checkout-history": "checkoutHistory",
+  "dining-bills": "diningBills",
+  tables: "tables",
+  waiting: "waiting",
+  "dining-waiting": "diningWaiting",
+  "lodging-waiting": "lodgingWaiting",
+};
+
+const resolveHotelResource = (resource) => hotelResourceMap[resource] || resource;
+
+const sessions = new Map();
+// Write-through cache for `sessions`. Persisted to sessions.json so the
+// Map survives a server restart (and so horizontal scaling is one DB swap
+// away instead of a rewrite). On every set/delete we serialize the whole
+// Map; for ≤ a few thousand active sessions this is fine. Beyond that,
+// swap writeJson for a real DB.
+const SESSIONS_FILE = "sessions.json";
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+const loadSessions = async () => {
+  let stored = [];
+  try {
+    stored = await readJson(SESSIONS_FILE);
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      console.error("Failed to load sessions.json; starting empty.");
+    }
+    stored = [];
+  }
+  if (!Array.isArray(stored)) return;
+  const now = Date.now();
+  for (const s of stored) {
+    if (s && s.sessionId && s.userId && (!s.expiresAt || s.expiresAt > now)) {
+      sessions.set(s.sessionId, s.userId);
+    }
+  }
+};
+
+const persistSessions = () => {
+  const now = Date.now();
+  const payload = Array.from(sessions.entries()).map(([sid, uid]) => ({
+    sessionId: sid,
+    userId: uid,
+    expiresAt: now + SESSION_TTL_MS,
+  }));
+  return writeJson(SESSIONS_FILE, payload);
+};
+
+// In-memory password-reset token store. Same volatility as `sessions` —
+// tokens die on server restart. Production migration target: a DB row with
+// TTL (e.g. Postgres `password_reset_tokens` table).
+const resetTokens = new Map();
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Generic rate-limit / lockout middleware. Same shape as the original
+// loginAttempts pattern (sliding window + lockout on overflow) but
+// reusable across login / register / password-reset.
+//
+// Usage:
+//   const loginAttempts = new Map();
+//   app.post("/api/login", rateLimit({
+//     store: loginAttempts,
+//     windowMs: 15 * 60 * 1000,
+//     lockoutMs: 15 * 60 * 1000,
+//     maxAttempts: 5,
+//     keyFn: (req) => `${req.body.email}:${req.ip}`,
+//     errorMessage: "Too many login attempts.",
+//   }), async (req, res) => { ... });
+//
+// The route handler calls `req.rateLimit.recordFailure()` on a failure
+// (e.g. wrong password) and `req.rateLimit.clear()` on success.
+const buildRateLimiter = ({ store, windowMs, lockoutMs, maxAttempts, keyFn, errorMessage }) => {
+  const prune = (entry, now) => {
+    if (!entry) return null;
+    if (entry.lockedUntil && entry.lockedUntil <= now) {
+      return { count: 0, firstAt: now, lockedUntil: 0 };
+    }
+    if (entry.firstAt && now - entry.firstAt > windowMs && !entry.lockedUntil) {
+      return { count: 0, firstAt: now, lockedUntil: 0 };
+    }
+    return entry;
+  };
+
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = keyFn(req);
+    const entry = prune(store.get(key), now);
+
+    if (entry && entry.lockedUntil && entry.lockedUntil > now) {
+      const retryAfter = Math.ceil((entry.lockedUntil - now) / 1000);
+      res.set("Retry-After", String(retryAfter));
+      return res.status(429).json({
+        error: `${errorMessage} Try again in ${retryAfter}s.`,
+        retryAfter,
+      });
+    }
+
+    req.rateLimit = {
+      recordFailure: () => {
+        const next = entry || { count: 0, firstAt: now, lockedUntil: 0 };
+        next.count = (next.count || 0) + 1;
+        if (next.firstAt == null) next.firstAt = now;
+        if (next.count >= maxAttempts) {
+          next.lockedUntil = now + lockoutMs;
+        }
+        store.set(key, next);
+      },
+      clear: () => {
+        store.delete(key);
+      },
     };
-    writeData('users.json', users);
-    addNotification({
-      email: users[index].email,
-      type: 'account_locked',
-      message: 'Your account has been temporarily locked due to repeated failed login attempts.',
-    });
-  }
 
-  loginAttempts.set(key, entry);
+    next();
+  };
+};
+const pendingWrites = new Map();
+
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-const requireLogin = (req, res, next) => {
-  if (!req.session || !req.session.user) {
-    return res.status(401).json({ error: 'Unauthorized' });
+const getDataFilePath = (filename) => path.join(DATA_DIR, filename);
+const getTempFilePath = (filename) => path.join(DATA_DIR, `${filename}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
+
+const readJson = async (filename) => {
+  const filePath = getDataFilePath(filename);
+  // Read-your-writes: if there's an in-flight write to this same path, await it
+  // so the read observes the latest committed state. Without this, a concurrent
+  // reader can bypass a write that's mid-rename and see stale data — which
+  // breaks atomic checkout (validate stock against current stock).
+  await pendingWrites.get(filePath);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return JSON.parse(raw || "[]");
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      return [];
+    }
+    if (err instanceof SyntaxError || /Unexpected token|Unexpected end of JSON input/.test(err.message)) {
+      const backupPath = path.join(DATA_DIR, `${filename}.corrupt.${Date.now()}.bak`);
+      await fs.copyFile(filePath, backupPath).catch(() => {});
+      console.error(`Data corruption detected in ${filename}. Backed up corrupted file to ${backupPath}.`);
+      const error = new Error(`Data file ${filename} is corrupted. Restore from backup ${path.basename(backupPath)}.`);
+      error.status = 500;
+      throw error;
+    }
+    throw err;
   }
+};
+
+const writeJson = async (filename, data) => {
+  const filePath = getDataFilePath(filename);
+  const tempFilePath = getTempFilePath(filename);
+  const payload = JSON.stringify(data, null, 2);
+
+  // Why we write to a sibling temp file then rename (and the Windows fix below):
+  //   - Atomic write semantics: readers either see the previous content or the
+  //     new content, never a half-written file.
+  //   - On POSIX, rename() is atomic by spec — works fine.
+  //   - On Windows, rename() across the same directory is *usually* atomic, but
+  //     antivirus / indexer / another open handle can hold the target briefly
+  //     and fail with EPERM. We've seen this spam the logs in dev.
+  //
+  // Strategy:
+  //   1. Try temp+rename (fast path on POSIX + clean Windows).
+  //   2. If rename fails with EPERM/EBUSY, fall back to a direct overwrite of
+  //      the target file. Direct writes still truncate-then-write atomically
+  //      enough for our single-writer-per-store scenario, and they survive
+  //      Windows' handle contention where rename doesn't.
+  //   3. Always clean up the temp file in finally.
+  const writeOp = async () => {
+    await fs.writeFile(tempFilePath, payload, "utf8");
+    try {
+      await fs.rename(tempFilePath, filePath);
+    } catch (renameErr) {
+      const code = renameErr && renameErr.code;
+      const isWindowsLock =
+        code === "EPERM" || code === "EBUSY" || code === "EACCES";
+      if (!isWindowsLock) throw renameErr;
+
+      // Fallback: direct overwrite. Open with 'w' to truncate, then write.
+      const handle = await fs.open(filePath, "w");
+      try {
+        await handle.writeFile(payload, "utf8");
+        await handle.sync().catch(() => {});
+      } finally {
+        await handle.close().catch(() => {});
+      }
+    }
+  };
+
+  const previous = pendingWrites.get(filePath) || Promise.resolve();
+  const next = previous.finally(async () => {
+    try {
+      await writeOp();
+    } finally {
+      // Always clean up any leftover temp file regardless of outcome.
+      await fs.rm(tempFilePath, { force: true }).catch(() => {});
+    }
+  });
+
+  pendingWrites.set(filePath, next);
+  next.finally(() => {
+    if (pendingWrites.get(filePath) === next) {
+      pendingWrites.delete(filePath);
+    }
+  });
+
+  return next;
+};
+
+const sanitizeUser = (user) => {
+  if (!user) return null;
+  const { password, ...rest } = user;
+  return rest;
+};
+
+const getUserFromSession = async (req) => {
+  const sessionId = req.cookies.sessionId;
+  if (!sessionId) return null;
+  const userId = sessions.get(sessionId);
+  if (!userId) return null;
+  const users = await readJson(resourceFiles.users);
+  return users.find((u) => u.id === userId) || null;
+};
+
+const ensureAuth = async (req, res, next) => {
+  const user = await getUserFromSession(req);
+  if (!user) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  req.user = user;
   next();
 };
 
-const cleanUser = (user) => {
-  if (!user) return null;
-  const { password, resetToken, resetTokenExpiry, lockedUntil, ...safeUser } = user;
-  return safeUser;
+const queryToItemKey = {
+  storeType: "_storeType",
+  storeId: "_storeId",
+  email: "_userEmail",
 };
 
 const matchesStoreScope = (item, storeType, storeId) => {
-  if (item._storeType !== storeType) return false;
-  if (storeId && item._storeId !== undefined && item._storeId !== storeId) return false;
+  if (String(item._storeType || item.storeType || "").trim() !== String(storeType || "").trim()) {
+    return false;
+  }
+  if (storeId !== undefined && storeId !== null && String(storeId).trim() !== "") {
+    if (item._storeId !== undefined && String(item._storeId).trim() !== String(storeId).trim()) {
+      return false;
+    }
+    if (item.storeId !== undefined && String(item.storeId).trim() !== String(storeId).trim()) {
+      return false;
+    }
+  }
   return true;
 };
 
-const filterByUser = (items, storeType, email, storeId) =>
-  items.filter((item) => matchesStoreScope(item, storeType, storeId) && item._userEmail === email);
-
-app.post('/api/register', (req, res) => {
-  const { email, password, role, storeType, storeId } = req.body || {};
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Missing registration fields' });
-  }
-
-  const users = readData('users.json', []);
-  const existing = users.find((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
-  if (existing) {
-    return res.status(409).json({ error: 'User already exists' });
-  }
-
-  const isFirstUser = users.length === 0;
-  if (!ENABLE_REGISTRATION && !isFirstUser) {
-    return res.status(403).json({ error: 'Registration is disabled. Contact administrator.' });
-  }
-
-  const nextUser = {
-    id: Date.now(),
-    email: String(email).toLowerCase(),
-    password: bcrypt.hashSync(String(password), BCRYPT_SALT_ROUNDS),
-    role: isFirstUser ? 'SUPER_OWNER' : (role || 'CASHIER'),
-    storeType: isFirstUser ? 'system' : storeType || 'retail',
-    storeId: isFirstUser ? null : storeId || storeType || null,
-    name: '',
-    phone: '',
-    address: '',
-    approved: isFirstUser,
-    status: isFirstUser ? 'approved' : 'pending',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  users.push(nextUser);
-  writeData('users.json', users);
-  res.status(201).json({
-    email: nextUser.email,
-    role: nextUser.role,
-    storeType: nextUser.storeType,
-    storeId: nextUser.storeId,
-    name: nextUser.name,
-    status: nextUser.status,
+const filterByQuery = (items, query) => {
+  const queryKeys = Object.keys(query).filter((key) => query[key] !== undefined && query[key] !== "");
+  if (!queryKeys.length) return items;
+  return items.filter((item) => {
+    return queryKeys.every((key) => {
+      const mappedKey = queryToItemKey[key] || key;
+      const value = query[key];
+      if (mappedKey === "_storeType" || mappedKey === "_storeId" || mappedKey === "_userEmail") {
+        return String(item[mappedKey] || item[key] || "") === String(value);
+      }
+      if (typeof item[mappedKey] === "object") {
+        return JSON.stringify(item[mappedKey]) === JSON.stringify(value);
+      }
+      return String(item[mappedKey]) === String(value);
+    });
   });
+};
+
+const getRequestScope = (req) => {
+  const storeType = String(req.query.storeType || req.user?.storeType || "").trim();
+  const storeId = req.query.storeId !== undefined && req.query.storeId !== null
+    ? String(req.query.storeId).trim() || storeType
+    : String(req.user?.storeId || req.user?.storeType || "").trim();
+  const email = String(req.query.email || req.user?.email || "").trim();
+  return { storeType, storeId, email };
+};
+
+const isScopedStoreSettingsData = (data) => {
+  return data && typeof data === "object" && !Array.isArray(data) && Object.keys(data).some((key) => key.startsWith("store-settings:"));
+};
+
+const getStoreSettingsScopeKey = (req) => {
+  const { storeType, storeId } = getRequestScope(req);
+  const keyType = storeType || req.user?.storeType || "system";
+  const keyId = storeId || keyType || "global";
+  return `store-settings:${keyType}:${keyId}`;
+};
+
+const getCookieOptions = () => ({
+  httpOnly: true,
+  sameSite: "none",
+  // SameSite=None cookies must also be Secure in modern browsers.
+  // Localhost is treated as a secure context in most browsers, so this works for local dev.
+  secure: true,
+  maxAge: 1000 * 60 * 60 * 24,
+  path: "/",
+  sameParty: false,
 });
 
-app.post('/api/login', (req, res) => {
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || isAllowedOrigin(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS origin denied: ${origin}`));
+    },
+    credentials: true,
+  })
+);
+app.options("*", cors({
+  origin: (origin, callback) => {
+    if (!origin || isAllowedOrigin(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS origin denied: ${origin}`));
+  },
+  credentials: true,
+}));
+app.use(express.json());
+app.use(cookieParser());
+
+// CSRF protection — double-submit cookie pattern. On login the server sets
+// an `XSRF-TOKEN` cookie (NOT HttpOnly so JS can read it). The frontend
+// echoes the cookie value in an `X-CSRF-Token` header on every non-GET
+// request. A cross-site attacker can't read the cookie, so they can't
+// produce the header. Public endpoints (login/register/password-reset) are
+// exempt because they don't yet have an authenticated session to protect.
+//
+// Trade-off: assumes frontend + backend share the same host (different
+// ports OK). For multi-domain deployments the cookie's Domain attribute
+// must be set to the parent domain — tracked as a follow-up.
+const CSRF_PUBLIC_PATHS = new Set([
+  "/api/login",
+  "/api/register",
+  "/api/register/available",
+  "/api/password-reset/request",
+  "/api/password-reset/confirm",
+]);
+
+const csrfProtection = (req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    return next();
+  }
+  if (CSRF_PUBLIC_PATHS.has(req.path)) {
+    return next();
+  }
+  const cookieToken = req.cookies && req.cookies["XSRF-TOKEN"];
+  const headerToken = req.headers["x-csrf-token"];
+  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+    return res.status(403).json({ error: "CSRF token mismatch" });
+  }
+  next();
+};
+
+app.use(csrfProtection);
+
+// Per-endpoint rate-limit stores. Each gets its own Map so a flood on one
+// endpoint doesn't impact another.
+const loginAttempts = new Map();
+const registerAttempts = new Map();
+const resetRequestAttempts = new Map();
+
+const loginLimiter = buildRateLimiter({
+  store: loginAttempts,
+  windowMs: 15 * 60 * 1000,
+  lockoutMs: 15 * 60 * 1000,
+  maxAttempts: 5,
+  keyFn: (req) => `${String(req.body?.email || "").trim().toLowerCase()}:${req.ip}`,
+  errorMessage: "Too many login attempts.",
+});
+
+const registerLimiter = buildRateLimiter({
+  store: registerAttempts,
+  windowMs: 60 * 60 * 1000,
+  lockoutMs: 60 * 60 * 1000,
+  maxAttempts: 10,
+  keyFn: (req) => `register:${req.ip}`,
+  errorMessage: "Too many registration attempts.",
+});
+
+const resetRequestLimiter = buildRateLimiter({
+  store: resetRequestAttempts,
+  windowMs: 60 * 60 * 1000,
+  lockoutMs: 60 * 60 * 1000,
+  maxAttempts: 5,
+  keyFn: (req) => `reset:${req.ip}`,
+  errorMessage: "Too many password reset requests.",
+});
+
+app.post("/api/login", loginLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required' });
+    return res.status(400).json({ error: "Email and password are required" });
   }
 
-  if (isLoginBlocked(req)) {
-    return res.status(429).json({ error: getLoginLockMessage(req) || 'Too many login attempts. Please try again later.' });
+  const normalizedEmail = String(email).trim().toLowerCase();
+
+  const users = await readJson(resourceFiles.users);
+  const user = users.find((u) => String(u.email).toLowerCase() === normalizedEmail);
+  if (!user) {
+    req.rateLimit.recordFailure();
+    return res.status(401).json({ error: "Invalid email or password" });
   }
 
-  const users = readData('users.json', []);
-  const user = users.find((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
-  const passwordMatches = user && bcrypt.compareSync(String(password), user.password);
-
-  if (!user || !passwordMatches) {
-    recordLoginAttempt(req, false);
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
-    return res.status(423).json({ error: 'Account temporarily locked due to failed login attempts' });
+  const matches = bcrypt.compareSync(password, user.password || "");
+  if (!matches) {
+    req.rateLimit.recordFailure();
+    return res.status(401).json({ error: "Invalid email or password" });
   }
 
   if (!user.approved) {
-    recordLoginAttempt(req, false);
-    addNotification({
-      email: user.email,
-      type: 'approval_required',
-      message: 'Your account is awaiting administrator approval.',
-    });
-    return res.status(403).json({ error: 'Account pending approval. Contact administrator.' });
+    return res.status(403).json({ error: "Account not approved" });
   }
 
-  recordLoginAttempt(req, true);
-  const sessionUser = {
-    email: user.email,
-    role: user.role,
-    storeType: user.storeType,
-    storeId: user.storeId || null,
-    ownerEmail: user.ownerEmail || null,
-    rootOwnerEmail: user.rootOwnerEmail || user.ownerEmail || null,
-    name: user.name || '',
-    phone: user.phone || '',
-    address: user.address || '',
-    lockedUntil: user.lockedUntil || null,
-  };
-  req.session.user = sessionUser;
-  req.session.regenerate(() => {
-    req.session.user = sessionUser;
-    res.json(sessionUser);
+  // Successful login — clear any accumulated attempts for this key.
+  req.rateLimit.clear();
+
+  const sessionId = crypto.randomBytes(24).toString("hex");
+  sessions.set(sessionId, user.id);
+  await persistSessions();
+  res.cookie("sessionId", sessionId, getCookieOptions());
+  // XSRF token cookie: same lifetime/flags as the session cookie but JS-
+  // readable (not HttpOnly). The frontend echoes it as the X-CSRF-Token
+  // header on every non-GET request. Cross-site attackers can't read it.
+  const csrfToken = crypto.randomBytes(24).toString("hex");
+  res.cookie("XSRF-TOKEN", csrfToken, {
+    httpOnly: false,
+    sameSite: "none",
+    secure: true,
+    maxAge: 1000 * 60 * 60 * 24,
+    path: "/",
   });
+  res.json(sanitizeUser(user));
 });
 
-app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => {
-    res.json({ success: true });
-  });
+app.post("/api/logout", async (req, res) => {
+  if (req.cookies.sessionId) {
+    sessions.delete(req.cookies.sessionId);
+    try {
+      await persistSessions();
+    } catch (err) {
+      console.warn("Failed to persist sessions after logout:", err.message);
+    }
+  }
+  res.clearCookie("sessionId", { path: "/" });
+  res.json({ ok: true });
 });
 
-app.get('/api/auth/user', (req, res) => {
-  res.json(getSessionUser(req));
+app.get("/api/auth/user", ensureAuth, async (req, res) => {
+  res.json(sanitizeUser(req.user));
 });
 
-app.post('/api/password-reset/request', async (req, res) => {
-  const { email } = req.body || {};
-  if (!email) {
-    return res.status(400).json({ error: 'Email is required' });
-  }
-
-  const users = readData('users.json', []);
-  const userIndex = users.findIndex((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
-  if (userIndex === -1) {
-    return res.status(200).json({ message: 'If the account exists, password reset instructions were sent.' });
-  }
-
-  const resetToken = crypto.randomBytes(24).toString('hex');
-  const resetTokenExpiry = Date.now() + PASSWORD_RESET_EXPIRY_MS;
-  users[userIndex] = {
-    ...users[userIndex],
-    resetToken,
-    resetTokenExpiry,
-  };
-  writeData('users.json', users);
-
-  addNotification({
-    email: users[userIndex].email,
-    type: 'password_reset_requested',
-    message: 'Password reset requested. Please check your email or contact support for the reset token.',
-  });
-
-  const emailDelivered = isEmailEnabled
-    ? await sendPasswordResetEmail(users[userIndex].email, resetToken).catch((err) => {
-        console.error('SendGrid error', err);
-        return false;
-      })
-    : false;
-
-  const responsePayload = {
-    message: emailDelivered
-      ? 'Password reset requested. Please check your email for the reset token.'
-      : 'Password reset requested. Email delivery is unavailable. Contact support or use the fallback token in development.',
-  };
-
-  if (!isEmailEnabled) {
-    responsePayload.resetToken = resetToken;
-  }
-
-  res.json(responsePayload);
+app.get("/api/register/available", async (req, res) => {
+  const users = await readJson(resourceFiles.users);
+  const available = users.length === 0;
+  res.json({ available, isFirstUser: available });
 });
 
-app.post('/api/password-reset/confirm', (req, res) => {
-  const { email, token, password } = req.body || {};
-  if (!email || !token || !password) {
-    return res.status(400).json({ error: 'Email, token, and new password are required' });
+app.post("/api/register", registerLimiter, async (req, res) => {
+  // Every register attempt counts toward the lockout, regardless of outcome.
+  // A misbehaving client spamming random emails still consumes its quota.
+  req.rateLimit.recordFailure();
+
+  const { email, password, ...rest } = req.body || {};
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const users = readData('users.json', []);
-  const userIndex = users.findIndex(
-    (u) => String(u.email).toLowerCase() === String(email).toLowerCase() && u.resetToken === token
-  );
-  if (userIndex === -1) {
-    return res.status(400).json({ error: 'Invalid reset token or email' });
+  const users = await readJson(resourceFiles.users);
+  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+    return res.status(400).json({ error: "Email already exists" });
   }
 
-  if (!users[userIndex].resetTokenExpiry || Date.now() > users[userIndex].resetTokenExpiry) {
-    return res.status(400).json({ error: 'Reset token has expired' });
-  }
-
-  users[userIndex] = {
-    ...users[userIndex],
-    password: bcrypt.hashSync(String(password), BCRYPT_SALT_ROUNDS),
-    resetToken: null,
-    resetTokenExpiry: null,
-    updatedAt: new Date().toISOString(),
-  };
-  writeData('users.json', users);
-
-  addNotification({
-    email: users[userIndex].email,
-    type: 'password_reset_success',
-    message: 'Your password was reset successfully.',
-  });
-
-  res.json({ message: 'Password updated successfully' });
-});
-
-app.get('/api/notifications', requireLogin, (req, res) => {
-  const current = getUserMeta(req);
-  const notifications = readData(NOTIFICATIONS_FILE, []);
-  const visible = notifications.filter((note) => String(note.email).toLowerCase() === String(current.email).toLowerCase());
-  res.json(visible);
-});
-
-app.post('/api/notifications/:id/read', requireLogin, (req, res) => {
-  const id = Number(req.params.id);
-  if (!id) {
-    return res.status(400).json({ error: 'Notification ID is required' });
-  }
-  markNotificationRead(id);
-  res.json({ success: true });
-});
-
-app.get('/api/register/available', (req, res) => {
-  const users = readData('users.json', []);
   const isFirstUser = users.length === 0;
-  const available = ENABLE_REGISTRATION || isFirstUser;
-  res.json({ available, isFirstUser });
+  const hashed = bcrypt.hashSync(password, 10);
+  const now = new Date().toISOString();
+  const newUser = {
+    id: Date.now(),
+    email: String(email).toLowerCase(),
+    password: hashed,
+    role: isFirstUser ? "SUPER_OWNER" : rest.role || "STORE_ADMIN",
+    storeType: isFirstUser ? "system" : String(rest.storeType || "retail"),
+    storeId: isFirstUser ? null : rest.storeId || rest.storeType || null,
+    approved: true,
+    status: "approved",
+    createdAt: now,
+    updatedAt: now,
+    ...rest,
+  };
+  users.push(newUser);
+  await writeJson(resourceFiles.users, users);
+  res.json(sanitizeUser(newUser));
 });
 
-app.use('/api', requireSecureSession);
-app.use('/api', requireCashierOrAbove);
+const ROLE_MANAGEMENT = {
+  SUPER_OWNER: ["SUPER_OWNER", "ADMIN", "STORE_ADMIN", "CASHIER"],
+  ADMIN: ["STORE_ADMIN", "CASHIER"],
+  STORE_ADMIN: ["CASHIER"],
+};
 
-app.get('/api/users', requireUserViewer, (req, res) => {
-  const users = readData('users.json', []);
-  const current = getUserMeta(req);
+const sanitizeUsers = (users) => users.map(sanitizeUser);
 
-  const visibleUsers = current.role === 'SUPER_OWNER'
-    ? users
-    : users.filter((u) => {
-        if (getUserScope(u) !== getUserScope(current)) return false;
-        if (isStoreAdminOnly(req)) {
-          return u.role === 'CASHIER' || u.email === current.email;
-        }
-        if (isAdminOnly(req)) {
-          return ['STORE_ADMIN', 'CASHIER'].includes(u.role) || u.email === current.email;
-        }
-        return u.email === current.email;
-      });
+const canManageRole = (currentRole, targetRole) => {
+  if (!currentRole || !targetRole) return false;
+  return ROLE_MANAGEMENT[currentRole]?.includes(targetRole) || false;
+};
 
-  res.json(visibleUsers.map(cleanUser));
+const getOwnershipFields = (currentUser) => {
+  if (!currentUser) return {};
+  const rootOwnerEmail = currentUser.role === "SUPER_OWNER" ? currentUser.email : currentUser.rootOwnerEmail || currentUser.email;
+  const ownerEmail = currentUser.role === "SUPER_OWNER" ? currentUser.email : currentUser.email;
+  return { ownerEmail, rootOwnerEmail };
+};
+
+app.get("/api/users", ensureAuth, async (req, res) => {
+  const users = await readJson(resourceFiles.users);
+  let filteredUsers = users;
+
+  if (req.user.role === "SUPER_OWNER") {
+    filteredUsers = users;
+  } else {
+    filteredUsers = users.filter((user) => {
+      return (
+        String(user.storeType) === String(req.user.storeType) &&
+        String(user.storeId) === String(req.user.storeId)
+      );
+    });
+  }
+
+  return res.json(sanitizeUsers(filteredUsers));
 });
 
-app.post('/api/users', requireUserManager, (req, res) => {
-  const { email, password, role, storeType, storeId, approved } = req.body || {};
-  if (!email || !password || !role || !storeType) {
-    return res.status(400).json({ error: 'Missing user fields' });
+app.post("/api/users", ensureAuth, async (req, res) => {
+  const currentUser = req.user;
+  let { email, password, role, storeType, storeId, approved = false, ...rest } = req.body || {};
+
+  if (!email || !password || !role) {
+    return res.status(400).json({ error: "Email, password, and role are required" });
   }
 
-  const current = getUserMeta(req);
-  const requestedRole = String(role).toUpperCase();
-  const requestedStoreType = String(storeType).toLowerCase();
-  const requestedStoreId = storeId !== undefined ? storeId : null;
-
-  if (!SUPPORTED_USER_ROLES.includes(requestedRole)) {
-    return res.status(403).json({ error: `Role ${requestedRole} is not supported` });
-  }
-  if (!isSuperOwner(req)) {
-    if (isStoreAdminOnly(req) && requestedRole !== 'CASHIER') {
-      return res.status(403).json({ error: 'Store Admin can only create cashier users' });
-    }
-    if (isAdminOnly(req) && !['STORE_ADMIN', 'CASHIER'].includes(requestedRole)) {
-      return res.status(403).json({ error: 'Admin can only create store admins and cashiers' });
-    }
+  if (!canManageRole(currentUser.role, role)) {
+    return res.status(403).json({ error: "Insufficient permissions to create this role" });
   }
 
-  const users = readData('users.json', []);
-  const existing = users.find((u) => String(u.email).toLowerCase() === String(email).toLowerCase());
-  if (existing) {
-    return res.status(409).json({ error: 'User already exists' });
+  if (currentUser.role !== "SUPER_OWNER") {
+    storeType = currentUser.storeType;
+    storeId = currentUser.storeId;
   }
 
-  const finalStoreType = isSuperOwner(req) ? requestedStoreType : current.storeType;
-  const finalStoreId = isSuperOwner(req)
-    ? requestedStoreId || requestedStoreType
-    : current.storeId || current.storeType;
+  if (role !== "SUPER_OWNER" && !storeType) {
+    return res.status(400).json({ error: "Store type is required for non-super-owner users" });
+  }
+
+  if (role !== "SUPER_OWNER" && !storeId) {
+    return res.status(400).json({ error: "Store ID is required for non-super-owner users" });
+  }
+
+  const users = await readJson(resourceFiles.users);
+  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+    return res.status(400).json({ error: "Email already exists" });
+  }
+
+  const now = new Date().toISOString();
+  const hashed = bcrypt.hashSync(password, 10);
+  const ownership = getOwnershipFields(currentUser);
+
+  const status = approved ? "approved" : "pending";
 
   const newUser = {
     id: Date.now(),
     email: String(email).toLowerCase(),
-    password: bcrypt.hashSync(String(password), BCRYPT_SALT_ROUNDS),
-    role: requestedRole,
-    storeType: finalStoreType,
-    storeId: finalStoreId,
-    ownerEmail: current.email,
-    rootOwnerEmail: current.rootOwnerEmail || current.ownerEmail || current.email,
-    name: '',
-    phone: '',
-    address: '',
-    approved: approved === true,
-    status: approved === true ? 'approved' : 'pending',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    password: hashed,
+    role,
+    storeType: role === "SUPER_OWNER" ? "system" : String(storeType),
+    storeId: role === "SUPER_OWNER" ? null : String(storeId),
+    approved,
+    status,
+    createdAt: now,
+    updatedAt: now,
+    ...ownership,
+    ...rest,
   };
 
   users.push(newUser);
-  writeData('users.json', users);
-  res.status(201).json(cleanUser(newUser));
+  await writeJson(resourceFiles.users, users);
+  return res.json(sanitizeUser(newUser));
 });
 
-app.put('/api/users/:id', requireUserManager, (req, res) => {
-  const current = getUserMeta(req);
-  const users = readData('users.json', []);
-  const index = users.findIndex((u) => String(u.id) === String(req.params.id));
+app.put("/api/users/:id", ensureAuth, async (req, res) => {
+  const currentUser = req.user;
+  const { id } = req.params;
+  const updates = req.body || {};
+  const users = await readJson(resourceFiles.users);
+  const index = users.findIndex((user) => String(user.id) === String(id));
+
   if (index === -1) {
-    return res.status(404).json({ error: 'User not found' });
+    return res.status(404).json({ error: "User not found" });
   }
 
-  const target = users[index];
-  if (!isSuperOwner(req) && getUserScope(target) !== getUserScope(current)) {
-    return res.status(403).json({ error: 'Cannot modify users outside your store' });
+  const targetUser = users[index];
+  if (!canManageRole(currentUser.role, targetUser.role) && currentUser.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Insufficient permissions to update this user" });
   }
 
-  if (isStoreAdminOnly(req) && target.role !== 'CASHIER' && target.email !== current.email) {
-    return res.status(403).json({ error: 'Store Admin can only manage cashiers in their store' });
-  }
-
-  if (isAdminOnly(req) && target.role === 'SUPER_OWNER') {
-    return res.status(403).json({ error: 'Admin cannot manage super owner' });
-  }
-
-  if (isAdminOnly(req) && target.role === 'ADMIN' && target.email !== current.email) {
-    return res.status(403).json({ error: 'Admin can only manage store admins and cashiers in their store' });
-  }
-
-  const updatedFields = { ...req.body };
-  if (updatedFields.password) {
-    updatedFields.password = bcrypt.hashSync(String(updatedFields.password), BCRYPT_SALT_ROUNDS);
-  }
-  if (typeof updatedFields.approved !== 'undefined') {
-    updatedFields.status = updatedFields.approved ? 'approved' : 'pending';
-  }
-  if (!isSuperOwner(req) && updatedFields.role) {
-    const newRole = String(updatedFields.role).toUpperCase();
-    if (isStoreAdminOnly(req) && newRole !== 'CASHIER') {
-      return res.status(403).json({ error: 'Store Admin can only assign cashier role' });
-    }
-    if (isAdminOnly(req) && !['STORE_ADMIN', 'CASHIER'].includes(newRole)) {
-      return res.status(403).json({ error: 'Admin can only assign store admin or cashier role' });
+  if (updates.email && updates.email !== targetUser.email) {
+    if (users.some((u) => String(u.email).toLowerCase() === String(updates.email).toLowerCase() && String(u.id) !== String(id))) {
+      return res.status(400).json({ error: "Email already exists" });
     }
   }
 
-  const finalStoreType = isSuperOwner(req)
-    ? updatedFields.storeType || target.storeType
-    : target.storeType;
-  const finalStoreId = isSuperOwner(req)
-    ? updatedFields.storeId !== undefined ? updatedFields.storeId : target.storeId
-    : target.storeId || current.storeType;
-
-  users[index] = {
-    ...target,
-    ...updatedFields,
-    email: String(updatedFields.email || target.email).toLowerCase(),
-    role: updatedFields.role || target.role,
-    storeType: finalStoreType,
-    storeId: finalStoreId,
-    updatedAt: new Date().toISOString(),
-  };
-
-  writeData('users.json', users);
-  res.json(cleanUser(users[index]));
-});
-
-app.delete('/api/users/:id', requireUserManager, (req, res) => {
-  const current = getUserMeta(req);
-  const users = readData('users.json', []);
-  const target = users.find((u) => String(u.id) === String(req.params.id));
-  if (!target) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  if (!isSuperOwner(req) && getUserScope(target) !== getUserScope(current)) {
-    return res.status(403).json({ error: 'Cannot remove users outside your store' });
-  }
-  if (isStoreAdminOnly(req) && target.role !== 'CASHIER') {
-    return res.status(403).json({ error: 'Store Admin can only remove cashier users' });
-  }
-  if (isAdminOnly(req) && ['SUPER_OWNER', 'ADMIN'].includes(target.role)) {
-    return res.status(403).json({ error: 'Admin can only remove store admins or cashiers in their store' });
-  }
-  if (!isSuperOwner(req) && target.role === 'SUPER_OWNER') {
-    return res.status(403).json({ error: 'Cannot remove super owner' });
-  }
-
-  const filtered = users.filter((u) => String(u.id) !== String(req.params.id));
-  writeData('users.json', filtered);
-  res.json({ success: true });
-});
-
-app.post('/api/users/:id/approve', requireUserManager, (req, res) => {
-  const current = getUserMeta(req);
-  const users = readData('users.json', []);
-  const index = users.findIndex((u) => String(u.id) === String(req.params.id));
-  if (index === -1) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  const target = users[index];
-  if (!isSuperOwner(req) && getUserScope(target) !== getUserScope(current)) {
-    return res.status(403).json({ error: 'Cannot approve users outside your store' });
-  }
-  if (isStoreAdminOnly(req) && target.role !== 'CASHIER') {
-    return res.status(403).json({ error: 'Store Admin can only approve cashier users' });
-  }
-  if (isAdminOnly(req) && ['SUPER_OWNER', 'ADMIN'].includes(target.role) && target.email !== current.email) {
-    return res.status(403).json({ error: 'Admin can only approve cashier users or their own store admins' });
+  if (updates.password) {
+    updates.password = bcrypt.hashSync(updates.password, 10);
   }
 
   users[index] = {
-    ...target,
-    approved: true,
-    status: 'approved',
+    ...targetUser,
+    ...updates,
     updatedAt: new Date().toISOString(),
   };
-  writeData('users.json', users);
 
-  addNotification({
-    email: users[index].email,
-    type: 'account_approved',
-    message: 'Your account has been approved and is ready for login.',
-  });
-
-  res.json(cleanUser(users[index]));
+  await writeJson(resourceFiles.users, users);
+  return res.json(sanitizeUser(users[index]));
 });
 
-const canViewStoreData = (req) => isRole(req, ['SUPER_OWNER', 'STORE_ADMIN', 'ADMIN']);
+app.delete("/api/users/:id", ensureAuth, async (req, res) => {
+  const currentUser = req.user;
+  const { id } = req.params;
+  const users = await readJson(resourceFiles.users);
+  const targetUser = users.find((user) => String(user.id) === String(id));
 
-app.get('/api/services', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const services = readData('services.json');
-  const visible = canViewStoreData(req)
-    ? services.filter((service) => matchesStoreScope(service, storeType, storeId))
-    : filterByUser(services, storeType, email, storeId);
-  res.json(visible);
-});
-
-app.post('/api/services', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const service = req.body;
-  if (!service || !service.name || service.rate === undefined) {
-    return res.status(400).json({ error: 'Invalid service payload' });
+  if (!targetUser) {
+    return res.status(404).json({ error: "User not found" });
   }
-  const services = readData('services.json');
-  const nextService = {
-    id: Date.now(),
-    name: service.name,
-    description: service.description || '',
-    rate: Number(service.rate),
-    hours: Number(service.hours || 0),
-    gst: Number(service.gst || 0),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
-  };
-  services.push(nextService);
-  writeData('services.json', services);
-  res.status(201).json(nextService);
+
+  if (!canManageRole(currentUser.role, targetUser.role) && currentUser.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Insufficient permissions to delete this user" });
+  }
+
+  const nextUsers = users.filter((user) => String(user.id) !== String(id));
+  await writeJson(resourceFiles.users, nextUsers);
+  return res.json({ ok: true });
 });
 
-app.put('/api/services/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const services = readData('services.json');
-  const index = services.findIndex((s) => String(s.id) === String(req.params.id) && s._storeType === storeType && s._userEmail === email);
+app.post("/api/password-reset/request", resetRequestLimiter, async (req, res) => {
+  // Every reset-request attempt counts toward the lockout — there's no
+  // "success/failure" distinction from the request side (the response is
+  // always generic to prevent enumeration), so we record unconditionally.
+  req.rateLimit.recordFailure();
+
+  const { email } = req.body || {};
+  const normalized = String(email || "").trim().toLowerCase();
+  // Always return success regardless of whether the email exists, to prevent
+  // account enumeration. The devToken field is only included when the email
+  // matches an existing user; in production this would be sent via SMTP
+  // instead of echoed in the response.
+  const generic = {
+    ok: true,
+    message: "If that email exists, a reset link has been sent.",
+  };
+
+  if (!normalized) return res.json(generic);
+
+  const users = await readJson(resourceFiles.users);
+  const user = users.find((u) => String(u.email).toLowerCase() === normalized);
+  if (!user) return res.json(generic);
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const expiresAt = Date.now() + PASSWORD_RESET_TTL_MS;
+  resetTokens.set(token, { email: normalized, expiresAt });
+
+  // Log so a developer reading server output can grab the token without
+  // needing to inspect the response. Production: send via SMTP instead.
+  console.log(`[password-reset] token for ${normalized}: ${token} (expires ${new Date(expiresAt).toISOString()})`);
+
+  // Only echo the token back in the response in dev mode. In production
+  // this is omitted so an attacker can't enumerate registered emails by
+  // checking for the field's presence.
+  const isDev = process.env.NODE_ENV !== "production";
+  res.json(isDev ? { ...generic, devToken: token } : generic);
+});
+
+app.post("/api/password-reset/confirm", async (req, res) => {
+  const { email, token, newPassword } = req.body || {};
+  const normalized = String(email || "").trim().toLowerCase();
+  const trimmedToken = String(token || "").trim();
+
+  if (!normalized || !trimmedToken || !newPassword) {
+    return res.status(400).json({ error: "Email, token, and new password are required" });
+  }
+
+  // Minimal password policy — matches the frontend regex (Login.jsx).
+  // Keeping this on the server is essential: the client can be bypassed.
+  if (!/^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[@$!%*?#&]).{8,}$/.test(newPassword)) {
+    return res.status(400).json({
+      error:
+        "Password must be at least 8 characters and include uppercase, lowercase, a digit, and a special character.",
+    });
+  }
+
+  const entry = resetTokens.get(trimmedToken);
+  if (!entry) {
+    return res.status(400).json({ error: "Invalid or already-used reset token" });
+  }
+  if (Date.now() > entry.expiresAt) {
+    resetTokens.delete(trimmedToken);
+    return res.status(400).json({ error: "Reset token has expired" });
+  }
+  if (entry.email !== normalized) {
+    // Token was issued for a different email — treat as invalid.
+    return res.status(400).json({ error: "Token does not match the supplied email" });
+  }
+
+  const users = await readJson(resourceFiles.users);
+  const index = users.findIndex((u) => String(u.email).toLowerCase() === normalized);
   if (index === -1) {
-    return res.status(404).json({ error: 'Service not found' });
+    // Edge case: user was deleted between request and confirm.
+    resetTokens.delete(trimmedToken);
+    return res.status(404).json({ error: "User no longer exists" });
   }
-  const updated = {
-    ...services[index],
-    ...req.body,
-    rate: Number(req.body.rate || services[index].rate),
-    hours: Number(req.body.hours || services[index].hours),
-    gst: Number(req.body.gst || services[index].gst),
+
+  users[index] = {
+    ...users[index],
+    password: bcrypt.hashSync(newPassword, 10),
     updatedAt: new Date().toISOString(),
   };
-  services[index] = updated;
-  writeData('services.json', services);
-  res.json(updated);
+  await writeJson(resourceFiles.users, users);
+
+  // Single-use: invalidate the token immediately so a leaked token can't be
+  // replayed after a successful reset.
+  resetTokens.delete(trimmedToken);
+
+  res.json({ ok: true, message: "Password has been reset. Please log in." });
 });
 
-app.delete('/api/services/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const services = readData('services.json');
-  const filtered = services.filter((s) => !(String(s.id) === String(req.params.id) && s._storeType === storeType && s._userEmail === email));
-  writeData('services.json', filtered);
-  res.json({ success: true });
-});
-
-app.get('/api/products', (req, res) => {
-  const { storeType, storeId } = getUserMeta(req);
-  const products = readData('products.json');
-  res.json(products.filter((p) => matchesStoreScope(p, storeType, storeId) || (!p._storeType && !p._storeId)));
-});
-
-app.post('/api/products', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const product = req.body;
-  if (!product || !product.name || !product.price || !product.barcode) {
-    return res.status(400).json({ error: 'Invalid product payload' });
+app.get("/api/store-settings", ensureAuth, async (req, res) => {
+  const settings = await readJson(resourceFiles["store-settings"]);
+  if (isScopedStoreSettingsData(settings)) {
+    const scopeKey = getStoreSettingsScopeKey(req);
+    return res.json(settings[scopeKey] || settings.global || {});
   }
-  const products = readData('products.json');
-  const nextProduct = {
-    id: Date.now(),
-    ...product,
-    price: Number(product.price),
-    gst: Number(product.gst || 0),
-    stock: Number(product.stock || 0),
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
-  };
-  products.push(nextProduct);
-  writeData('products.json', products);
-  res.status(201).json(nextProduct);
+  res.json(settings);
 });
 
-app.put('/api/products/:id', (req, res) => {
-  const { storeType, storeId, email } = getUserMeta(req);
-  const updated = req.body;
-  const products = readData('products.json');
-  const index = products.findIndex((p) => {
-    if (String(p.id) !== String(req.params.id) || p._storeType !== storeType) return false;
-    if (storeId && p._storeId !== undefined && p._storeId !== storeId) return false;
-    return p._userEmail === email || canViewStoreData(req);
-  });
-  if (index === -1) {
-    return res.status(404).json({ error: 'Product not found' });
+app.post("/api/store-settings", ensureAuth, async (req, res) => {
+  const payload = req.body || {};
+  const existing = await readJson(resourceFiles["store-settings"]);
+  const scopeKey = getStoreSettingsScopeKey(req);
+  const hasScopeFromQuery = Boolean(req.query.storeType || req.query.storeId);
+
+  if (isScopedStoreSettingsData(existing)) {
+    const next = { ...existing, [scopeKey]: payload };
+    await writeJson(resourceFiles["store-settings"], next);
+    return res.json(payload);
   }
-  const nextProduct = {
-    ...products[index],
-    ...updated,
-    price: Number(updated.price || products[index].price),
-    gst: Number(updated.gst || products[index].gst),
-    stock: Number(updated.stock || products[index].stock),
-  };
-  products[index] = nextProduct;
-  writeData('products.json', products);
-  res.json(nextProduct);
-});
 
-app.delete('/api/products/:id', (req, res) => {
-  const { storeType, storeId, email } = getUserMeta(req);
-  const products = readData('products.json');
-  const filtered = products.filter((p) => {
-    if (String(p.id) !== String(req.params.id) || p._storeType !== storeType) return true;
-    if (storeId && p._storeId !== undefined && p._storeId !== storeId) return true;
-    return !(p._userEmail === email || canViewStoreData(req));
-  });
-  writeData('products.json', filtered);
-  res.json({ success: true });
-});
-
-app.get('/api/invoices', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const invoices = readData('invoices.json');
-  const visible = canViewStoreData(req)
-    ? invoices.filter((inv) => matchesStoreScope(inv, storeType, storeId))
-    : invoices.filter((inv) => matchesStoreScope(inv, storeType, storeId) && inv._userEmail === email);
-  res.json(visible);
-});
-
-app.post('/api/invoices', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const invoice = req.body;
-  if (!invoice || !invoice.invoiceNo) {
-    return res.status(400).json({ error: 'Invalid invoice payload' });
+  if (hasScopeFromQuery) {
+    const next = { global: existing, [scopeKey]: payload };
+    await writeJson(resourceFiles["store-settings"], next);
+    return res.json(payload);
   }
-  const invoices = readData('invoices.json');
-  const nextInvoice = {
-    id: Date.now(),
-    ...invoice,
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
-  };
-  invoices.push(nextInvoice);
-  writeData('invoices.json', invoices);
-  res.status(201).json(nextInvoice);
+
+  await writeJson(resourceFiles["store-settings"], payload);
+  res.json(payload);
 });
 
-app.get('/api/invoices/:invoiceNo', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const invoices = readData('invoices.json');
-  const invoice = invoices.find((inv) => {
-    const matchesInvoice = String(inv.invoiceNo).trim().toLowerCase() === String(req.params.invoiceNo).trim().toLowerCase();
-    if (!matchesInvoice || inv._storeType !== storeType) return false;
-    if (storeId && inv._storeId !== undefined && inv._storeId !== storeId) return false;
-    if (canViewStoreData(req)) return true;
-    return inv._userEmail === email;
-  });
+app.get("/api/hotel/checkout-history", ensureAuth, (req, res) => {
+  res.json(hotelStore.checkoutHistory);
+});
+
+app.get("/api/hotel/dining-bills", ensureAuth, (req, res) => {
+  res.json(hotelStore.diningBills);
+});
+
+app.get("/api/hotel/:resource", ensureAuth, (req, res) => {
+  const resource = resolveHotelResource(req.params.resource);
+  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  res.json(hotelStore[resource]);
+});
+
+app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
+  const resource = resolveHotelResource(req.params.resource);
+  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const item = { id: Date.now(), ...req.body };
+  hotelStore[resource].push(item);
+  await persistHotelStore();
+  res.json(item);
+});
+
+app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
+  hotelStore.checkoutHistory = [];
+  await persistHotelStore();
+  res.json({ ok: true });
+});
+
+app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
+  const resource = resolveHotelResource(req.params.resource);
+  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  hotelStore[resource] = hotelStore[resource].filter((item) => String(item.id) !== String(req.params.id));
+  await persistHotelStore();
+  res.json({ ok: true });
+});
+
+app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+  const { tableId } = req.params;
+  const payload = req.body || {};
+  const existing = hotelStore.diningBills.find((item) => String(item.id) === String(tableId));
+  if (existing) {
+    Object.assign(existing, payload);
+    await persistHotelStore();
+    return res.json(existing);
+  }
+  const item = { id: tableId, ...payload };
+  hotelStore.diningBills.push(item);
+  await persistHotelStore();
+  res.json(item);
+});
+
+app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+  const { tableId } = req.params;
+  hotelStore.diningBills = hotelStore.diningBills.filter((item) => String(item.id) !== String(tableId));
+  await persistHotelStore();
+  res.json({ ok: true });
+});
+
+app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
+  const invoices = await readJson(resourceFiles.invoices);
+  const invoice = invoices.find((item) => String(item.invoiceNo) === String(req.params.invoiceNo));
   if (!invoice) {
-    return res.status(404).json({ error: 'Invoice not found' });
+    return res.status(404).json({ error: "Not found" });
   }
   res.json(invoice);
 });
 
-app.get('/api/customer-credits', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const customers = readData('customerCredits.json');
-  const visible = canViewStoreData(req)
-    ? customers.filter((customer) => matchesStoreScope(customer, storeType, storeId))
-    : filterByUser(customers, storeType, email, storeId);
-  res.json(visible);
-});
-
-app.post('/api/customer-credits', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const customer = req.body;
-  if (!customer || !customer.name || customer.amount === undefined) {
-    return res.status(400).json({ error: 'Invalid customer payload' });
+// POST /api/invoices/checkout
+// Atomically validates and decrements stock for every line item in the
+// invoice, then persists the invoice. This replaces the client-side approach
+// of firing N parallel PUT /api/products/:id calls per cart mutation, which
+// was race-prone across concurrent cashiers.
+//
+// Flow:
+//   1. readJson(products) chains on pendingWrites (see readJson) so we see
+//      the latest committed stock.
+//   2. Validate stock per line item. Any failure → 409 with no writes.
+//   3. writeJson(products, decremented) — chained behind any in-flight write.
+//   4. writeJson(invoices, [...existing, newInvoice]).
+//
+// Failure modes:
+//   - 409 insufficient stock → nothing mutated.
+//   - 500 between steps 3 and 4 → stock decremented but invoice not saved.
+//     The reverse order (invoice first, products second) would be worse: a
+//     customer is charged for an item that wasn't actually deducted.
+const resolveCheckoutQuantity = (item) => {
+  const unit = String(item.unit || "").toLowerCase();
+  if (unit === "kg") {
+    return Number(item.qtyKg) || 0;
   }
-  const customers = readData('customerCredits.json');
-  const nextCustomer = {
+  return Number(item.qty) || 0;
+};
+
+// Server-authoritative discount validation. The client computes its own
+// totals using its own copy of the line items + discounts, but the server
+// refuses to persist any discount that obviously makes no sense. This
+// closes the most blatant abuse (negative prices, percentages above 100%)
+// without forcing full server-side totals recomputation — that's a
+// follow-up. A misbehaving client can still tweak totals in flight, but
+// it can't crash the math.
+const validateDiscount = (discount, label) => {
+  if (!discount) return null;
+  if (typeof discount !== "object") return `${label}: must be an object`;
+  const v = Number(discount.value);
+  if (!Number.isFinite(v)) return `${label}: value must be a number`;
+  if (v < 0) return `${label}: value cannot be negative`;
+  if (discount.type === "percent" && v > 100) return `${label}: percentage cannot exceed 100`;
+  if (discount.type !== "percent" && discount.type !== "flat") {
+    return `${label}: type must be "percent" or "flat"`;
+  }
+  return null;
+};
+
+app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
+  const invoice = req.body || {};
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+
+  if (items.length === 0) {
+    return res.status(400).json({ error: "Invoice has no line items" });
+  }
+  if (!invoice.invoiceNo) {
+    return res.status(400).json({ error: "invoiceNo is required" });
+  }
+
+  // Validate bill-level + per-line discounts up-front. No writes happen
+  // here, so failing is cheap.
+  const billDiscErr = validateDiscount(invoice.discount, "Bill discount");
+  if (billDiscErr) return res.status(400).json({ error: billDiscErr });
+  const lineDiscs = Array.isArray(invoice.discountBreakdown?.line)
+    ? invoice.discountBreakdown.line
+    : [];
+  for (const ld of lineDiscs) {
+    const err = validateDiscount(ld.discount, `Line discount on ${ld.productName || ld.productId || "item"}`);
+    if (err) return res.status(400).json({ error: err });
+  }
+
+  const products = await readJson(resourceFiles.products);
+  const productsById = new Map(products.map((p) => [String(p.id), p]));
+
+  // 1. Validate every line item against current stock.
+  for (const item of items) {
+    const product = productsById.get(String(item.id));
+    if (!product) {
+      return res.status(404).json({
+        error: "Product not found",
+        productId: item.id,
+        productName: item.name,
+      });
+    }
+    const requested = resolveCheckoutQuantity(item);
+    if (requested <= 0) {
+      return res.status(400).json({
+        error: "Invalid quantity",
+        productId: item.id,
+        productName: product.name,
+        requested,
+      });
+    }
+    const available = Number(product.stock) || 0;
+    if (available < requested) {
+      return res.status(409).json({
+        error: "Insufficient stock",
+        productId: item.id,
+        productName: product.name,
+        available,
+        requested,
+      });
+    }
+  }
+
+  // 2. Decrement stock and capture updated values for the response.
+  const updatedStock = [];
+  const updatedProducts = products.map((product) => {
+    // Only adjust products that appear as line items.
+    const lineItem = items.find((it) => String(it.id) === String(product.id));
+    if (!lineItem) return product;
+    const requested = resolveCheckoutQuantity(lineItem);
+    const nextStock = +(Number(product.stock) - requested).toFixed(3);
+    updatedStock.push({ id: product.id, name: product.name, stock: nextStock });
+    return {
+      ...product,
+      stock: nextStock,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  // 3. Persist products first (so a crash here leaves no invoice but stock is
+  //    decremented — recoverable). See Part 2b note in the plan.
+  await writeJson(resourceFiles.products, updatedProducts);
+
+  // 4. Persist invoice.
+  const invoices = await readJson(resourceFiles.invoices);
+  const { storeType, storeId, email } = getRequestScope(req);
+  const now = new Date().toISOString();
+  const savedInvoice = {
     id: Date.now(),
-    ...customer,
-    amount: Number(customer.amount),
-    note: customer.note || "",
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
+    createdAt: now,
+    updatedAt: now,
+    ...invoice,
   };
-  customers.push(nextCustomer);
-  writeData('customerCredits.json', customers);
-  res.status(201).json(nextCustomer);
+  if (storeType) savedInvoice._storeType = storeType;
+  if (storeId) savedInvoice._storeId = storeId;
+  if (email) savedInvoice._userEmail = email;
+  invoices.push(savedInvoice);
+  await writeJson(resourceFiles.invoices, invoices);
+
+  res.status(201).json({ invoice: savedInvoice, updatedStock });
 });
 
-app.put('/api/customer-credits/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const customers = readData('customerCredits.json');
-  const index = customers.findIndex((c) => String(c.id) === String(req.params.id) && c._storeType === storeType && c._userEmail === email);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Customer credit not found' });
+app.get("/api/:resource", ensureAuth, async (req, res) => {
+  const { resource } = req.params;
+  const filename = resourceFiles[resource];
+  if (!filename) {
+    return res.status(404).json({ error: "Not found" });
   }
-  const updated = {
-    ...customers[index],
-    ...req.body,
-    amount: Number(req.body.amount || customers[index].amount),
-    updatedAt: new Date().toISOString(),
-  };
-  customers[index] = updated;
-  writeData('customerCredits.json', customers);
-  res.json(updated);
+  const items = await readJson(filename);
+  res.json(filterByQuery(items, req.query));
 });
 
-app.delete('/api/customer-credits/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const customers = readData('customerCredits.json');
-  const filtered = customers.filter((c) => !(String(c.id) === String(req.params.id) && c._storeType === storeType && c._userEmail === email));
-  writeData('customerCredits.json', filtered);
-  res.json({ success: true });
-});
-
-app.get('/api/orders', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const { type } = req.query;
-  const orders = readData('orders.json');
-  let filtered = canViewStoreData(req)
-    ? orders.filter((order) => matchesStoreScope(order, storeType, storeId))
-    : orders.filter((order) => matchesStoreScope(order, storeType, storeId) && order._userEmail === email);
-  if (type) {
-    filtered = filtered.filter((order) => order.type === String(type));
+app.post("/api/:resource", ensureAuth, async (req, res) => {
+  const { resource } = req.params;
+  const filename = resourceFiles[resource];
+  if (!filename) {
+    return res.status(404).json({ error: "Not found" });
   }
-  res.json(filtered);
-});
-
-app.post('/api/orders', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const order = req.body;
-  if (!order || !order.type) {
-    return res.status(400).json({ error: 'Invalid order payload' });
-  }
-  const orders = readData('orders.json');
-  const nextOrder = {
+  const items = await readJson(filename);
+  const now = new Date().toISOString();
+  const { storeType, storeId, email } = getRequestScope(req);
+  const item = {
     id: Date.now(),
-    ...order,
-    status: order.status || 'pending',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
+    createdAt: now,
+    updatedAt: now,
+    ...req.body,
   };
-  orders.push(nextOrder);
-  writeData('orders.json', orders);
-  res.status(201).json(nextOrder);
+  if (storeType) item._storeType = storeType;
+  if (storeId) item._storeId = storeId;
+  if (email) item._userEmail = email;
+  items.push(item);
+  await writeJson(filename, items);
+  res.json(item);
 });
 
-app.put('/api/orders/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const orders = readData('orders.json');
-  const index = orders.findIndex((o) => String(o.id) === String(req.params.id) && o._storeType === storeType && o._userEmail === email);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Order not found' });
+app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
+  const { resource, id } = req.params;
+  const filename = resourceFiles[resource];
+  if (!filename) {
+    return res.status(404).json({ error: "Not found" });
   }
-  const updated = {
-    ...orders[index],
+  const items = await readJson(filename);
+  const { storeType, storeId, email } = getRequestScope(req);
+  const index = items.findIndex((item) => {
+    if (String(item.id) !== String(id)) return false;
+    if (!matchesStoreScope(item, storeType, storeId)) return false;
+    if (email && String(item._userEmail || item.email || "") !== String(email)) return false;
+    return true;
+  });
+  if (index === -1) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  items[index] = {
+    ...items[index],
     ...req.body,
     updatedAt: new Date().toISOString(),
   };
-  orders[index] = updated;
-  writeData('orders.json', orders);
-  res.json(updated);
+  await writeJson(filename, items);
+  res.json(items[index]);
 });
 
-app.delete('/api/orders/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const orders = readData('orders.json');
-  const filtered = orders.filter((order) => !(String(order.id) === String(req.params.id) && order._storeType === storeType && order._userEmail === email));
-  writeData('orders.json', filtered);
-  res.json({ success: true });
-});
-
-app.get('/api/expenses', (req, res) => {
-  const { storeType, email, storeId } = getUserMeta(req);
-  const expenses = readData('expenses.json');
-  const visible = canViewStoreData(req)
-    ? expenses.filter((expense) => matchesStoreScope(expense, storeType, storeId))
-    : expenses.filter((expense) => matchesStoreScope(expense, storeType, storeId) && expense._userEmail === email);
-  res.json(visible);
-});
-
-app.post('/api/expenses', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const expense = req.body;
-  if (!expense || !expense.description || expense.amount === undefined) {
-    return res.status(400).json({ error: 'Invalid expense payload' });
+app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
+  const { resource, id } = req.params;
+  const filename = resourceFiles[resource];
+  if (!filename) {
+    return res.status(404).json({ error: "Not found" });
   }
-  const expenses = readData('expenses.json');
-  const nextExpense = {
-    id: Date.now(),
-    description: expense.description,
-    category: expense.category || 'Other',
-    amount: Number(expense.amount),
-    date: expense.date || new Date().toISOString().split('T')[0],
-    notes: expense.notes || '',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    _storeType: storeType,
-    _storeId: storeId || storeType,
-    _userEmail: email,
-  };
-  expenses.push(nextExpense);
-  writeData('expenses.json', expenses);
-  res.status(201).json(nextExpense);
+  const { storeType, storeId, email } = getRequestScope(req);
+  const items = await readJson(filename);
+  const nextItems = items.filter((item) => {
+    if (String(item.id) !== String(id)) return true;
+    if (!matchesStoreScope(item, storeType, storeId)) return true;
+    if (email && String(item._userEmail || item.email || "") !== String(email)) return true;
+    return false;
+  });
+  await writeJson(filename, nextItems);
+  res.json({ ok: true });
 });
 
-app.put('/api/expenses/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const expenses = readData('expenses.json');
-  const index = expenses.findIndex((expense) => String(expense.id) === String(req.params.id) && expense._storeType === storeType && expense._userEmail === email);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Expense not found' });
+app.use((req, res) => {
+  res.status(404).json({ error: "Not found" });
+});
+
+app.use((err, req, res, next) => {
+  console.error("Unhandled backend error:", err);
+  if (res.headersSent) {
+    return next(err);
   }
-  const updated = {
-    ...expenses[index],
-    ...req.body,
-    amount: Number(req.body.amount || expenses[index].amount),
-    updatedAt: new Date().toISOString(),
-  };
-  expenses[index] = updated;
-  writeData('expenses.json', expenses);
-  res.json(updated);
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || "Internal Server Error" });
 });
 
-app.delete('/api/expenses/:id', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const expenses = readData('expenses.json');
-  const filtered = expenses.filter((expense) => !(String(expense.id) === String(req.params.id) && expense._storeType === storeType && expense._userEmail === email));
-  writeData('expenses.json', filtered);
-  res.json({ success: true });
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
 });
 
-app.put('/api/invoices/:invoiceNo', (req, res) => {
-  const { storeType, email } = getUserMeta(req);
-  const invoices = readData('invoices.json');
-  const index = invoices.findIndex(
-    (inv) =>
-      String(inv.invoiceNo).trim().toLowerCase() === String(req.params.invoiceNo).trim().toLowerCase() &&
-      inv._storeType === storeType &&
-      inv._userEmail === email
-  );
-  if (index === -1) {
-    return res.status(404).json({ error: 'Invoice not found' });
-  }
-  const updated = {
-    ...invoices[index],
-    ...req.body,
-    updatedAt: new Date().toISOString(),
-  };
-  invoices[index] = updated;
-  writeData('invoices.json', invoices);
-  res.json(updated);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
 });
 
-app.get('/api/store-settings', (req, res) => {
-  const settings = readData('storeSettings.json', {});
-  res.json(settings);
-});
+const startServer = async () => {
+  await loadSessions();
+  await loadHotelStore();
+  app.listen(PORT, () => {
+    console.log(`Backend scaffold listening on http://localhost:${PORT}`);
+    console.log(`Frontend origin allowed: ${FRONTEND_ORIGIN}`);
+    console.log("Sessions loaded from disk.");
+    console.log("Hotel state loaded from disk.");
+  });
+};
 
-app.post('/api/store-settings', (req, res) => {
-  const settings = req.body;
-  writeData('storeSettings.json', settings || {});
-  res.json(settings);
-});
-
-app.use(express.static(path.join(__dirname, '..', 'build')));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'build', 'index.html'));
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+startServer().catch((err) => {
+  console.error("Failed to start backend:", err);
+  process.exit(1);
 });

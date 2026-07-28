@@ -37,5 +37,36 @@
     "_storeType": "service",
     "_storeId": "11",
     "_userEmail": "meena@gmail.com"
+  },
+  {
+    "id": 1783585488908,
+    "createdAt": "2026-07-09T08:24:48.908Z",
+    "updatedAt": "2026-07-09T08:26:03.721Z",
+    "customer": "ajay kodag",
+    "phone": "9552813906",
+    "service": "Washing",
+    "items": [
+      {
+        "name": "Washing",
+        "qty": 1,
+        "price": 50,
+        "gst": 5
+      }
+    ],
+    "qty": 1,
+    "status": "in_process",
+    "expectedReturn": "2026-07-10",
+    "notes": "",
+    "express": true,
+    "token": "LD-0001",
+    "invoiceNo": "INV-3bf64f",
+    "subtotal": 50,
+    "gstTotal": 2.5,
+    "expressSurcharge": 80,
+    "total": 132.5,
+    "type": "laundry",
+    "_storeType": "laundry",
+    "_storeId": "New Laundry",
+    "_userEmail": "ajaykodag47@gmail.com"
   }
 ]
