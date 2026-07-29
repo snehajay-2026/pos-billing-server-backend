@@ -318,6 +318,11 @@ const filterByQuery = (items, query) => {
 };
 
 const getRequestScope = (req) => {
+  // SUPER_OWNER is unscoped: they see data across all stores. The query-
+  // string storeType/storeId overrides win for explicit filtering.
+  if (req.user?.role === "SUPER_OWNER" && !req.query.storeType) {
+    return { storeType: null, storeId: null, email: null };
+  }
   const storeType = String(req.query.storeType || req.user?.storeType || "").trim();
   const storeId = req.query.storeId !== undefined && req.query.storeId !== null
     ? String(req.query.storeId).trim() || storeType
@@ -1103,13 +1108,12 @@ process.on("uncaughtException", (err) => {
 });
 
 const startServer = async () => {
-  await loadSessions();
-  await loadHotelStore();
+  // Sessions live in MySQL (sessions table) — no in-memory load needed.
+  // Hotel state lives in MySQL (hotel_state singleton) — no in-memory
+  // load needed. The MySQL-backed routes read fresh on every request.
   app.listen(PORT, () => {
-    console.log(`Backend scaffold listening on http://localhost:${PORT}`);
+    console.log(`Backend (MySQL) listening on http://localhost:${PORT}`);
     console.log(`Frontend origin allowed: ${FRONTEND_ORIGIN}`);
-    console.log("Sessions loaded from disk.");
-    console.log("Hotel state loaded from disk.");
   });
 };
 
