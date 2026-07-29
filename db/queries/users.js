@@ -166,6 +166,46 @@ const listByStore = async (storeType, storeId) => {
   return rows[0].map(rowToUser);
 };
 
+// update: applies only the columns present in `patch`. Re-hashes the
+// password if provided. Matches the JSON behavior (partial update,
+// untouched fields preserved).
+const update = async (id, patch) => {
+  const allowed = [
+    "email", "role", "store_type", "store_id", "owner_email",
+    "root_owner_email", "approved", "status", "name", "phone", "address",
+  ];
+  const sets = [];
+  const params = [];
+  for (const k of allowed) {
+    if (!Object.prototype.hasOwnProperty.call(patch, k)) continue;
+    let v = patch[k];
+    if (k === "role") v = normalizeRole(v);
+    if (k === "approved") v = v ? 1 : 0;
+    if (k === "email") v = normalizeEmail(v);
+    sets.push(`\`${k}\` = ?`);
+    params.push(v);
+  }
+  // Password is hashed separately (caller's responsibility — they
+  // already used bcrypt.hashSync()).
+  if (patch.password) {
+    sets.push("`password` = ?");
+    params.push(patch.password);
+  }
+  if (!sets.length) {
+    await query("UPDATE users SET updated_at = NOW(3) WHERE id = ?", [id]);
+    return findById(id);
+  }
+  sets.push("updated_at = NOW(3)");
+  params.push(id);
+  await query(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`, params);
+  return findById(id);
+};
+
+const deleteById = async (id) => {
+  const result = await query("DELETE FROM users WHERE id = ?", [id]);
+  return result[0].affectedRows > 0;
+};
+
 module.exports = {
   findByEmailWithPassword,
   findById,
@@ -174,6 +214,8 @@ module.exports = {
   create,
   listAll,
   listByStore,
+  update,
+  deleteById,
   // Exposed for Stage 3b+ (user CRUD beyond login/register).
   normalizeRole,
   normalizeEmail,

@@ -16,6 +16,9 @@ const ordersQueries = require("./db/queries/orders");
 const customersQueries = require("./db/queries/customers");
 const customerCreditsQueries = require("./db/queries/customer-credits");
 const notificationsQueries = require("./db/queries/notifications");
+const storeSettingsQueries = require("./db/queries/store-settings");
+const hotelQueries = require("./db/queries/hotel");
+const sessionsQueries = require("./db/queries/sessions");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -71,43 +74,6 @@ const resourceFiles = {
   "store-settings": "storeSettings.json",
 };
 
-const hotelStoreDefaults = {
-  tables: [],
-  waiting: [],
-  diningWaiting: [],
-  lodgingWaiting: [],
-  checkoutHistory: [],
-  diningBills: [],
-};
-
-// hotelStore is loaded from server/data/hotel.json at startup so tables, waiting
-// lists, dining bills, and checkout history survive server restarts. Mutating
-// handlers MUST call persistHotelStore() after their in-memory update.
-const hotelStore = { ...hotelStoreDefaults };
-
-const loadHotelStore = async () => {
-  let stored = {};
-  try {
-    stored = await readJson("hotel.json");
-  } catch (err) {
-    // ENOENT → first boot, no persisted state yet. Any other error has already
-    // been logged by readJson's corruption handler; fall back to defaults so
-    // the server still boots.
-    if (err && err.code !== "ENOENT") {
-      console.error("Failed to load hotel.json; using empty defaults.");
-    }
-  }
-  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-    for (const key of Object.keys(hotelStoreDefaults)) {
-      if (Array.isArray(stored[key])) {
-        hotelStore[key] = stored[key];
-      }
-    }
-  }
-};
-
-const persistHotelStore = () => writeJson("hotel.json", hotelStore);
-
 const hotelResourceMap = {
   "checkout-history": "checkoutHistory",
   "dining-bills": "diningBills",
@@ -119,43 +85,12 @@ const hotelResourceMap = {
 
 const resolveHotelResource = (resource) => hotelResourceMap[resource] || resource;
 
-const sessions = new Map();
-// Write-through cache for `sessions`. Persisted to sessions.json so the
-// Map survives a server restart (and so horizontal scaling is one DB swap
-// away instead of a rewrite). On every set/delete we serialize the whole
-// Map; for ≤ a few thousand active sessions this is fine. Beyond that,
-// swap writeJson for a real DB.
-const SESSIONS_FILE = "sessions.json";
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-
-const loadSessions = async () => {
-  let stored = [];
-  try {
-    stored = await readJson(SESSIONS_FILE);
-  } catch (err) {
-    if (err && err.code !== "ENOENT") {
-      console.error("Failed to load sessions.json; starting empty.");
-    }
-    stored = [];
-  }
-  if (!Array.isArray(stored)) return;
-  const now = Date.now();
-  for (const s of stored) {
-    if (s && s.sessionId && s.userId && (!s.expiresAt || s.expiresAt > now)) {
-      sessions.set(s.sessionId, s.userId);
-    }
-  }
-};
-
-const persistSessions = () => {
-  const now = Date.now();
-  const payload = Array.from(sessions.entries()).map(([sid, uid]) => ({
-    sessionId: sid,
-    userId: uid,
-    expiresAt: now + SESSION_TTL_MS,
-  }));
-  return writeJson(SESSIONS_FILE, payload);
-};
+const sessions = new Map(); // legacy in-memory store — kept as a stub so any
+// upstream reference that survived the migration doesn't blow up. Reads
+// happen via sessionsQueries.get(), writes via sessionsQueries.put(),
+// removes via sessionsQueries.remove(). The Map is never read.
+const loadSessions = async () => {};
+const persistSessions = async () => {};
 
 // In-memory password-reset token store. Same volatility as `sessions` —
 // tokens die on server restart. Production migration target: a DB row with
@@ -329,10 +264,9 @@ const sanitizeUser = (user) => {
 const getUserFromSession = async (req) => {
   const sessionId = req.cookies.sessionId;
   if (!sessionId) return null;
-  const userId = sessions.get(sessionId);
+  const userId = await sessionsQueries.get(sessionId);
   if (!userId) return null;
-  const users = await readJson(resourceFiles.users);
-  return users.find((u) => u.id === userId) || null;
+  return usersQueries.findById(userId);
 };
 
 const ensureAuth = async (req, res, next) => {
@@ -531,8 +465,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   req.rateLimit.clear();
 
   const sessionId = crypto.randomBytes(24).toString("hex");
-  sessions.set(sessionId, user.id);
-  await persistSessions();
+  await sessionsQueries.put(sessionId, user.id);
   res.cookie("sessionId", sessionId, getCookieOptions());
   // XSRF token cookie: same lifetime/flags as the session cookie but JS-
   // readable (not HttpOnly). The frontend echoes it as the X-CSRF-Token
@@ -550,11 +483,10 @@ app.post("/api/login", loginLimiter, async (req, res) => {
 
 app.post("/api/logout", async (req, res) => {
   if (req.cookies.sessionId) {
-    sessions.delete(req.cookies.sessionId);
     try {
-      await persistSessions();
+      await sessionsQueries.remove(req.cookies.sessionId);
     } catch (err) {
-      console.warn("Failed to persist sessions after logout:", err.message);
+      console.warn("Failed to remove session after logout:", err.message);
     }
   }
   res.clearCookie("sessionId", { path: "/" });
@@ -632,21 +564,12 @@ const getOwnershipFields = (currentUser) => {
 };
 
 app.get("/api/users", ensureAuth, async (req, res) => {
-  const users = await readJson(resourceFiles.users);
-  let filteredUsers = users;
-
   if (req.user.role === "SUPER_OWNER") {
-    filteredUsers = users;
-  } else {
-    filteredUsers = users.filter((user) => {
-      return (
-        String(user.storeType) === String(req.user.storeType) &&
-        String(user.storeId) === String(req.user.storeId)
-      );
-    });
+    return res.json(sanitizeUsers(await usersQueries.listAll()));
   }
-
-  return res.json(sanitizeUsers(filteredUsers));
+  return res.json(
+    sanitizeUsers(await usersQueries.listByStore(req.user.storeType, req.user.storeId))
+  );
 });
 
 app.post("/api/users", ensureAuth, async (req, res) => {
@@ -674,78 +597,79 @@ app.post("/api/users", ensureAuth, async (req, res) => {
     return res.status(400).json({ error: "Store ID is required for non-super-owner users" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+  if (await usersQueries.existsByEmail(email)) {
     return res.status(400).json({ error: "Email already exists" });
   }
 
-  const now = new Date().toISOString();
   const hashed = bcrypt.hashSync(password, 10);
   const ownership = getOwnershipFields(currentUser);
-
   const status = approved ? "approved" : "pending";
 
-  const newUser = {
-    id: Date.now(),
-    email: String(email).toLowerCase(),
-    password: hashed,
+  const created = await usersQueries.create({
+    email,
+    passwordHash: hashed,
     role,
     storeType: role === "SUPER_OWNER" ? "system" : String(storeType),
     storeId: role === "SUPER_OWNER" ? null : String(storeId),
     approved,
     status,
-    createdAt: now,
-    updatedAt: now,
-    ...ownership,
-    ...rest,
-  };
+    ownerEmail: ownership.ownerEmail,
+    rootOwnerEmail: ownership.rootOwnerEmail,
+    name: rest.name,
+    phone: rest.phone,
+    address: rest.address,
+  });
 
-  users.push(newUser);
-  await writeJson(resourceFiles.users, users);
-  return res.json(sanitizeUser(newUser));
+  if (!created) {
+    // UNIQUE-constraint race
+    return res.status(400).json({ error: "Email already exists" });
+  }
+  return res.json(sanitizeUser(created));
 });
 
 app.put("/api/users/:id", ensureAuth, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
   const updates = req.body || {};
-  const users = await readJson(resourceFiles.users);
-  const index = users.findIndex((user) => String(user.id) === String(id));
 
-  if (index === -1) {
+  const targetUser = await usersQueries.findById(id);
+  if (!targetUser) {
     return res.status(404).json({ error: "User not found" });
   }
 
-  const targetUser = users[index];
   if (!canManageRole(currentUser.role, targetUser.role) && currentUser.role !== "SUPER_OWNER") {
     return res.status(403).json({ error: "Insufficient permissions to update this user" });
   }
 
   if (updates.email && updates.email !== targetUser.email) {
-    if (users.some((u) => String(u.email).toLowerCase() === String(updates.email).toLowerCase() && String(u.id) !== String(id))) {
+    if (await usersQueries.existsByEmail(updates.email)) {
       return res.status(400).json({ error: "Email already exists" });
     }
   }
 
-  if (updates.password) {
-    updates.password = bcrypt.hashSync(updates.password, 10);
-  }
+  // Map camelCase → snake_case for the queries module.
+  const patch = {};
+  if (updates.email) patch.email = String(updates.email).toLowerCase();
+  if (updates.role) patch.role = updates.role;
+  if (updates.storeType !== undefined) patch.store_type = updates.storeType;
+  if (updates.storeId !== undefined) patch.store_id = updates.storeId;
+  if (updates.ownerEmail !== undefined) patch.owner_email = updates.ownerEmail;
+  if (updates.rootOwnerEmail !== undefined) patch.root_owner_email = updates.rootOwnerEmail;
+  if (updates.approved !== undefined) patch.approved = !!updates.approved;
+  if (updates.status) patch.status = updates.status;
+  if (updates.name !== undefined) patch.name = updates.name;
+  if (updates.phone !== undefined) patch.phone = updates.phone;
+  if (updates.address !== undefined) patch.address = updates.address;
+  if (updates.password) patch.password = bcrypt.hashSync(updates.password, 10);
 
-  users[index] = {
-    ...targetUser,
-    ...updates,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await writeJson(resourceFiles.users, users);
-  return res.json(sanitizeUser(users[index]));
+  const updated = await usersQueries.update(id, patch);
+  return res.json(sanitizeUser(updated));
 });
 
 app.delete("/api/users/:id", ensureAuth, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
-  const users = await readJson(resourceFiles.users);
-  const targetUser = users.find((user) => String(user.id) === String(id));
+  const targetUser = await usersQueries.findById(id);
 
   if (!targetUser) {
     return res.status(404).json({ error: "User not found" });
@@ -755,8 +679,7 @@ app.delete("/api/users/:id", ensureAuth, async (req, res) => {
     return res.status(403).json({ error: "Insufficient permissions to delete this user" });
   }
 
-  const nextUsers = users.filter((user) => String(user.id) !== String(id));
-  await writeJson(resourceFiles.users, nextUsers);
+  await usersQueries.deleteById(id);
   return res.json({ ok: true });
 });
 
@@ -779,8 +702,9 @@ app.post("/api/password-reset/request", resetRequestLimiter, async (req, res) =>
 
   if (!normalized) return res.json(generic);
 
-  const users = await readJson(resourceFiles.users);
-  const user = users.find((u) => String(u.email).toLowerCase() === normalized);
+  // Existence check via MySQL — existence is all we need here; the token
+  // is the only thing this endpoint hands out.
+  const user = await usersQueries.findByEmailWithPassword(normalized);
   if (!user) return res.json(generic);
 
   const token = crypto.randomBytes(32).toString("hex");
@@ -829,20 +753,16 @@ app.post("/api/password-reset/confirm", async (req, res) => {
     return res.status(400).json({ error: "Token does not match the supplied email" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  const index = users.findIndex((u) => String(u.email).toLowerCase() === normalized);
-  if (index === -1) {
+  // Verify the user still exists, then update the password via MySQL.
+  const user = await usersQueries.findByEmailWithPassword(normalized);
+  if (!user) {
     // Edge case: user was deleted between request and confirm.
     resetTokens.delete(trimmedToken);
     return res.status(404).json({ error: "User no longer exists" });
   }
-
-  users[index] = {
-    ...users[index],
+  await usersQueries.update(user.id, {
     password: bcrypt.hashSync(newPassword, 10),
-    updatedAt: new Date().toISOString(),
-  };
-  await writeJson(resourceFiles.users, users);
+  });
 
   // Single-use: invalidate the token immediately so a leaked token can't be
   // replayed after a successful reset.
@@ -852,104 +772,99 @@ app.post("/api/password-reset/confirm", async (req, res) => {
 });
 
 app.get("/api/store-settings", ensureAuth, async (req, res) => {
-  const settings = await readJson(resourceFiles["store-settings"]);
-  if (isScopedStoreSettingsData(settings)) {
-    const scopeKey = getStoreSettingsScopeKey(req);
-    return res.json(settings[scopeKey] || settings.global || {});
-  }
-  res.json(settings);
+  const scopeKey = getStoreSettingsScopeKey(req);
+  // Try the requested scope first, then fall back to 'global' so the
+  // first GET after a fresh install returns an empty object instead of
+  // a 404-shaped response.
+  const payload =
+    (await storeSettingsQueries.getPayloadByScopeKey(scopeKey)) ??
+    (await storeSettingsQueries.getPayloadByScopeKey("global")) ??
+    {};
+  res.json(payload);
 });
 
 app.post("/api/store-settings", ensureAuth, async (req, res) => {
   const payload = req.body || {};
-  const existing = await readJson(resourceFiles["store-settings"]);
   const scopeKey = getStoreSettingsScopeKey(req);
-  const hasScopeFromQuery = Boolean(req.query.storeType || req.query.storeId);
-
-  if (isScopedStoreSettingsData(existing)) {
-    const next = { ...existing, [scopeKey]: payload };
-    await writeJson(resourceFiles["store-settings"], next);
-    return res.json(payload);
-  }
-
-  if (hasScopeFromQuery) {
-    const next = { global: existing, [scopeKey]: payload };
-    await writeJson(resourceFiles["store-settings"], next);
-    return res.json(payload);
-  }
-
-  await writeJson(resourceFiles["store-settings"], payload);
-  res.json(payload);
+  const { storeType, storeId } = getRequestScope(req);
+  const scopeType = scopeKey === "global" ? "global" : "store";
+  const saved = await storeSettingsQueries.upsert({
+    scopeKey,
+    scopeType,
+    storeType,
+    storeId,
+    payload,
+  });
+  res.json(saved ?? {});
 });
 
-app.get("/api/hotel/checkout-history", ensureAuth, (req, res) => {
-  res.json(hotelStore.checkoutHistory);
+app.get("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
+  res.json(await hotelQueries.getSlice("checkout-history"));
 });
 
-app.get("/api/hotel/dining-bills", ensureAuth, (req, res) => {
-  res.json(hotelStore.diningBills);
+app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
+  res.json(await hotelQueries.getSlice("dining-bills"));
 });
 
-app.get("/api/hotel/:resource", ensureAuth, (req, res) => {
+app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
-  res.json(hotelStore[resource]);
+  res.json(await hotelQueries.getSlice(resource));
 });
 
 app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
   const item = { id: Date.now(), ...req.body };
-  hotelStore[resource].push(item);
-  await persistHotelStore();
+  await hotelQueries.pushItem(resource, item);
   res.json(item);
 });
 
 app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
-  hotelStore.checkoutHistory = [];
-  await persistHotelStore();
+  await hotelQueries.clearSlice("checkout-history");
   res.json({ ok: true });
 });
 
 app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
-  hotelStore[resource] = hotelStore[resource].filter((item) => String(item.id) !== String(req.params.id));
-  await persistHotelStore();
-  res.json({ ok: true });
+  const removed = await hotelQueries.removeItem(resource, req.params.id);
+  res.json({ ok: removed });
 });
 
 app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
   const payload = req.body || {};
-  const existing = hotelStore.diningBills.find((item) => String(item.id) === String(tableId));
+  const bills = await hotelQueries.getSlice("dining-bills");
+  const existing = bills.find((item) => String(item.id) === String(tableId));
+  let next;
   if (existing) {
-    Object.assign(existing, payload);
-    await persistHotelStore();
-    return res.json(existing);
+    next = { ...existing, ...payload };
+    const filtered = bills.filter((b) => String(b.id) !== String(tableId));
+    filtered.push(next);
+    await hotelQueries.replaceSlice("dining-bills", filtered);
+  } else {
+    next = { id: tableId, ...payload };
+    bills.push(next);
+    await hotelQueries.replaceSlice("dining-bills", bills);
   }
-  const item = { id: tableId, ...payload };
-  hotelStore.diningBills.push(item);
-  await persistHotelStore();
-  res.json(item);
+  res.json(next);
 });
 
 app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
-  hotelStore.diningBills = hotelStore.diningBills.filter((item) => String(item.id) !== String(tableId));
-  await persistHotelStore();
-  res.json({ ok: true });
+  const removed = await hotelQueries.removeItem("dining-bills", tableId);
+  res.json({ ok: removed });
 });
 
 app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
-  const invoices = await readJson(resourceFiles.invoices);
-  const invoice = invoices.find((item) => String(item.invoiceNo) === String(req.params.invoiceNo));
+  const invoice = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
   if (!invoice) {
     return res.status(404).json({ error: "Not found" });
   }
