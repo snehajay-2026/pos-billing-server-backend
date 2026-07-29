@@ -347,6 +347,12 @@ app.post("/api/logout", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Render health check — the platform probes GET / and marks a deploy as
+// "Failed" if it returns anything but 200.
+app.get("/", (req, res) => {
+  res.json({ ok: true, service: "pos-billing-backend" });
+});
+
 app.get("/api/auth/user", ensureAuth, async (req, res) => {
   res.json(sanitizeUser(req.user));
 });
