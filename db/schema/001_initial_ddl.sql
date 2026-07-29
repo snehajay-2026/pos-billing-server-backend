@@ -1,49 +1,24 @@
 -- =============================================================================
--- POS Billing — MySQL schema
+-- POS Billing — MySQL DDL (tables only)
 -- -----------------------------------------------------------------------------
--- Run order:
---   1. As MySQL root (or any user with CREATE USER + GRANT):
---        source db/schema.sql
---      This script bootstraps the database, the dedicated app user, and every
---      table. It is idempotent — re-running drops nothing, only adds missing
---      pieces.
+-- This file contains ONLY the CREATE TABLE statements. It assumes the database
+-- already exists and the connection has the right privileges.
 --
---   2. In server/.env (create if missing):
---        DB_HOST=localhost
---        DB_PORT=3306
---        DB_USER=pos_billing_app
---        DB_PASSWORD=<set-this>
---        DB_NAME=pos_billing
+-- Apply with one of:
+--   mysql pos_billing < schema/001_initial_ddl.sql
+--   mysql -h <host> -P <port> -u <user> -p pos_billing < schema/001_initial_ddl.sql
 --
---   3. Restart `npm start` in server/. The pool in db/pool.js will connect
---      with the credentials above.
+-- For a localhost bootstrap (creates DB + user too), apply in order:
+--   mysql -u root -p < schema/002_bootstrap_local.sql
+--   mysql -u root -p < schema/001_initial_ddl.sql
+--
+-- For Railway / PlanetScale / Aiven / Render-managed MySQL:
+--   - The provider creates the database and user for you.
+--   - Just connect with the provided URL and apply this file.
 --
 -- Source of truth for column shapes: server/data/*.json + server/index.js.
 -- If a JSON field is missing on a given row, the column is NULL.
 -- =============================================================================
-
--- -----------------------------------------------------------------------------
--- 0. Database + dedicated user
--- -----------------------------------------------------------------------------
--- The dedicated user has ONLY grants on `pos_billing.*` — no global privileges,
--- no GRANT OPTION. Root access is not used by app code at any point.
-
-CREATE DATABASE IF NOT EXISTS `pos_billing`
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
-
--- Create the app user. Skip-if-exists keeps the script idempotent.
--- NOTE: Replace 'CHANGE_ME_app_password' with the real password before running
--- in any environment. In dev, copy this file to schema.local.sql and .gitignore
--- it so the real password never gets committed.
-CREATE USER IF NOT EXISTS 'pos_billing_app'@'localhost'
-  IDENTIFIED BY 'CHANGE_ME_app_password';
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-  ON `pos_billing`.*
-  TO 'pos_billing_app'@'localhost';
-
-FLUSH PRIVILEGES;
 
 USE `pos_billing`;
 
@@ -352,6 +327,79 @@ CREATE TABLE IF NOT EXISTS `audit_log` (
   KEY `idx_audit_user` (`user_id`),
   KEY `idx_audit_action` (`action`),
   KEY `idx_audit_entity` (`entity_type`, `entity_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 14. customers
+-- -----------------------------------------------------------------------------
+-- Source: server/data/customers.json
+-- Notes: Free-form CRM-ish fields. Name + phone are the only "real" columns;
+--   the rest is just whatever the frontend has been storing.
+CREATE TABLE IF NOT EXISTS `customers` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `name` VARCHAR(255) NULL,
+  `phone` VARCHAR(64) NULL,
+  `email` VARCHAR(255) NULL,
+  `address` TEXT NULL,
+  `notes` TEXT NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_customers_store` (`_store_type`, `_store_id`),
+  KEY `idx_customers_user` (`_user_email`),
+  KEY `idx_customers_phone` (`phone`),
+  KEY `idx_customers_email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 15. customer_credits
+-- -----------------------------------------------------------------------------
+-- Source: server/data/customerCredits.json
+-- Notes: Each row is a credit balance tied to a customer (by phone) for a
+--   specific store scope. amount is DECIMAL because it represents money.
+CREATE TABLE IF NOT EXISTS `customer_credits` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `customer_phone` VARCHAR(64) NULL,
+  `customer_name` VARCHAR(255) NULL,
+  `amount` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+  `description` TEXT NULL,
+  `date` DATE NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_credits_store` (`_store_type`, `_store_id`),
+  KEY `idx_credits_user` (`_user_email`),
+  KEY `idx_credits_phone` (`customer_phone`),
+  KEY `idx_credits_date` (`date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 16. notifications
+-- -----------------------------------------------------------------------------
+-- Source: server/data/notifications.json
+-- Notes: User-scoped activity feed (password-reset requests, system events).
+--   `payload` is JSON for forward-compat with whatever fields future
+--   notification writers want to attach.
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id` BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  `read_flag` TINYINT(1) NOT NULL DEFAULT 0,
+  `email` VARCHAR(255) NULL,
+  `type` VARCHAR(64) NULL,
+  `message` TEXT NULL,
+  `payload` JSON NULL,
+  `_store_type` VARCHAR(64) NULL,
+  `_store_id` VARCHAR(128) NULL,
+  `_user_email` VARCHAR(255) NULL,
+  `created_at` DATETIME(3) NULL,
+  `updated_at` DATETIME(3) NULL,
+  KEY `idx_notifications_user` (`_user_email`),
+  KEY `idx_notifications_email` (`email`),
+  KEY `idx_notifications_read` (`read_flag`),
+  KEY `idx_notifications_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================================

@@ -1,3 +1,4 @@
 node_modules/
 .env
-db/schema.local.sql
+db/data-archive/
+server/data/archive-*/

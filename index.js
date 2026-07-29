@@ -7,11 +7,36 @@ const fs = require("fs").promises;
 const path = require("path");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const usersQueries = require("./db/queries/users");
+const productsQueries = require("./db/queries/products");
+const invoicesQueries = require("./db/queries/invoices");
+const servicesQueries = require("./db/queries/services");
+const expensesQueries = require("./db/queries/expenses");
+const ordersQueries = require("./db/queries/orders");
+const customersQueries = require("./db/queries/customers");
+const customerCreditsQueries = require("./db/queries/customer-credits");
+const notificationsQueries = require("./db/queries/notifications");
+const storeSettingsQueries = require("./db/queries/store-settings");
+const hotelQueries = require("./db/queries/hotel");
+const sessionsQueries = require("./db/queries/sessions");
+
+// Map of MySQL-backed resources to their query modules. The handlers
+// below check this map and short-circuit to the queries module if found.
+// Everything else still falls through to the JSON path.
+const mysqlResources = {
+  products: productsQueries,
+  services: servicesQueries,
+  expenses: expensesQueries,
+  orders: ordersQueries,
+  invoices: invoicesQueries,
+  customers: customersQueries,
+  "customer-credits": customerCreditsQueries,
+  notifications: notificationsQueries,
+};
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
-const DATA_DIR = path.join(__dirname, "data");
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return false;
@@ -35,56 +60,6 @@ const isAllowedOrigin = (origin) => {
   }
 };
 
-const resourceFiles = {
-  users: "users.json",
-  products: "products.json",
-  services: "services.json",
-  expenses: "expenses.json",
-  orders: "orders.json",
-  invoices: "invoices.json",
-  notifications: "notifications.json",
-  "customer-credits": "customerCredits.json",
-  customers: "customers.json",
-  "store-settings": "storeSettings.json",
-};
-
-const hotelStoreDefaults = {
-  tables: [],
-  waiting: [],
-  diningWaiting: [],
-  lodgingWaiting: [],
-  checkoutHistory: [],
-  diningBills: [],
-};
-
-// hotelStore is loaded from server/data/hotel.json at startup so tables, waiting
-// lists, dining bills, and checkout history survive server restarts. Mutating
-// handlers MUST call persistHotelStore() after their in-memory update.
-const hotelStore = { ...hotelStoreDefaults };
-
-const loadHotelStore = async () => {
-  let stored = {};
-  try {
-    stored = await readJson("hotel.json");
-  } catch (err) {
-    // ENOENT → first boot, no persisted state yet. Any other error has already
-    // been logged by readJson's corruption handler; fall back to defaults so
-    // the server still boots.
-    if (err && err.code !== "ENOENT") {
-      console.error("Failed to load hotel.json; using empty defaults.");
-    }
-  }
-  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-    for (const key of Object.keys(hotelStoreDefaults)) {
-      if (Array.isArray(stored[key])) {
-        hotelStore[key] = stored[key];
-      }
-    }
-  }
-};
-
-const persistHotelStore = () => writeJson("hotel.json", hotelStore);
-
 const hotelResourceMap = {
   "checkout-history": "checkoutHistory",
   "dining-bills": "diningBills",
@@ -95,44 +70,6 @@ const hotelResourceMap = {
 };
 
 const resolveHotelResource = (resource) => hotelResourceMap[resource] || resource;
-
-const sessions = new Map();
-// Write-through cache for `sessions`. Persisted to sessions.json so the
-// Map survives a server restart (and so horizontal scaling is one DB swap
-// away instead of a rewrite). On every set/delete we serialize the whole
-// Map; for ≤ a few thousand active sessions this is fine. Beyond that,
-// swap writeJson for a real DB.
-const SESSIONS_FILE = "sessions.json";
-const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
-
-const loadSessions = async () => {
-  let stored = [];
-  try {
-    stored = await readJson(SESSIONS_FILE);
-  } catch (err) {
-    if (err && err.code !== "ENOENT") {
-      console.error("Failed to load sessions.json; starting empty.");
-    }
-    stored = [];
-  }
-  if (!Array.isArray(stored)) return;
-  const now = Date.now();
-  for (const s of stored) {
-    if (s && s.sessionId && s.userId && (!s.expiresAt || s.expiresAt > now)) {
-      sessions.set(s.sessionId, s.userId);
-    }
-  }
-};
-
-const persistSessions = () => {
-  const now = Date.now();
-  const payload = Array.from(sessions.entries()).map(([sid, uid]) => ({
-    sessionId: sid,
-    userId: uid,
-    expiresAt: now + SESSION_TTL_MS,
-  }));
-  return writeJson(SESSIONS_FILE, payload);
-};
 
 // In-memory password-reset token store. Same volatility as `sessions` —
 // tokens die on server restart. Production migration target: a DB row with
@@ -201,100 +138,9 @@ const buildRateLimiter = ({ store, windowMs, lockoutMs, maxAttempts, keyFn, erro
     next();
   };
 };
-const pendingWrites = new Map();
 
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
-};
-
-const getDataFilePath = (filename) => path.join(DATA_DIR, filename);
-const getTempFilePath = (filename) => path.join(DATA_DIR, `${filename}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-
-const readJson = async (filename) => {
-  const filePath = getDataFilePath(filename);
-  // Read-your-writes: if there's an in-flight write to this same path, await it
-  // so the read observes the latest committed state. Without this, a concurrent
-  // reader can bypass a write that's mid-rename and see stale data — which
-  // breaks atomic checkout (validate stock against current stock).
-  await pendingWrites.get(filePath);
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw || "[]");
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      return [];
-    }
-    if (err instanceof SyntaxError || /Unexpected token|Unexpected end of JSON input/.test(err.message)) {
-      const backupPath = path.join(DATA_DIR, `${filename}.corrupt.${Date.now()}.bak`);
-      await fs.copyFile(filePath, backupPath).catch(() => {});
-      console.error(`Data corruption detected in ${filename}. Backed up corrupted file to ${backupPath}.`);
-      const error = new Error(`Data file ${filename} is corrupted. Restore from backup ${path.basename(backupPath)}.`);
-      error.status = 500;
-      throw error;
-    }
-    throw err;
-  }
-};
-
-const writeJson = async (filename, data) => {
-  const filePath = getDataFilePath(filename);
-  const tempFilePath = getTempFilePath(filename);
-  const payload = JSON.stringify(data, null, 2);
-
-  // Why we write to a sibling temp file then rename (and the Windows fix below):
-  //   - Atomic write semantics: readers either see the previous content or the
-  //     new content, never a half-written file.
-  //   - On POSIX, rename() is atomic by spec — works fine.
-  //   - On Windows, rename() across the same directory is *usually* atomic, but
-  //     antivirus / indexer / another open handle can hold the target briefly
-  //     and fail with EPERM. We've seen this spam the logs in dev.
-  //
-  // Strategy:
-  //   1. Try temp+rename (fast path on POSIX + clean Windows).
-  //   2. If rename fails with EPERM/EBUSY, fall back to a direct overwrite of
-  //      the target file. Direct writes still truncate-then-write atomically
-  //      enough for our single-writer-per-store scenario, and they survive
-  //      Windows' handle contention where rename doesn't.
-  //   3. Always clean up the temp file in finally.
-  const writeOp = async () => {
-    await fs.writeFile(tempFilePath, payload, "utf8");
-    try {
-      await fs.rename(tempFilePath, filePath);
-    } catch (renameErr) {
-      const code = renameErr && renameErr.code;
-      const isWindowsLock =
-        code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (!isWindowsLock) throw renameErr;
-
-      // Fallback: direct overwrite. Open with 'w' to truncate, then write.
-      const handle = await fs.open(filePath, "w");
-      try {
-        await handle.writeFile(payload, "utf8");
-        await handle.sync().catch(() => {});
-      } finally {
-        await handle.close().catch(() => {});
-      }
-    }
-  };
-
-  const previous = pendingWrites.get(filePath) || Promise.resolve();
-  const next = previous.finally(async () => {
-    try {
-      await writeOp();
-    } finally {
-      // Always clean up any leftover temp file regardless of outcome.
-      await fs.rm(tempFilePath, { force: true }).catch(() => {});
-    }
-  });
-
-  pendingWrites.set(filePath, next);
-  next.finally(() => {
-    if (pendingWrites.get(filePath) === next) {
-      pendingWrites.delete(filePath);
-    }
-  });
-
-  return next;
 };
 
 const sanitizeUser = (user) => {
@@ -306,10 +152,9 @@ const sanitizeUser = (user) => {
 const getUserFromSession = async (req) => {
   const sessionId = req.cookies.sessionId;
   if (!sessionId) return null;
-  const userId = sessions.get(sessionId);
+  const userId = await sessionsQueries.get(sessionId);
   if (!userId) return null;
-  const users = await readJson(resourceFiles.users);
-  return users.find((u) => u.id === userId) || null;
+  return usersQueries.findById(userId);
 };
 
 const ensureAuth = async (req, res, next) => {
@@ -321,46 +166,12 @@ const ensureAuth = async (req, res, next) => {
   next();
 };
 
-const queryToItemKey = {
-  storeType: "_storeType",
-  storeId: "_storeId",
-  email: "_userEmail",
-};
-
-const matchesStoreScope = (item, storeType, storeId) => {
-  if (String(item._storeType || item.storeType || "").trim() !== String(storeType || "").trim()) {
-    return false;
-  }
-  if (storeId !== undefined && storeId !== null && String(storeId).trim() !== "") {
-    if (item._storeId !== undefined && String(item._storeId).trim() !== String(storeId).trim()) {
-      return false;
-    }
-    if (item.storeId !== undefined && String(item.storeId).trim() !== String(storeId).trim()) {
-      return false;
-    }
-  }
-  return true;
-};
-
-const filterByQuery = (items, query) => {
-  const queryKeys = Object.keys(query).filter((key) => query[key] !== undefined && query[key] !== "");
-  if (!queryKeys.length) return items;
-  return items.filter((item) => {
-    return queryKeys.every((key) => {
-      const mappedKey = queryToItemKey[key] || key;
-      const value = query[key];
-      if (mappedKey === "_storeType" || mappedKey === "_storeId" || mappedKey === "_userEmail") {
-        return String(item[mappedKey] || item[key] || "") === String(value);
-      }
-      if (typeof item[mappedKey] === "object") {
-        return JSON.stringify(item[mappedKey]) === JSON.stringify(value);
-      }
-      return String(item[mappedKey]) === String(value);
-    });
-  });
-};
-
 const getRequestScope = (req) => {
+  // SUPER_OWNER is unscoped: they see data across all stores. The query-
+  // string storeType/storeId overrides win for explicit filtering.
+  if (req.user?.role === "SUPER_OWNER" && !req.query.storeType) {
+    return { storeType: null, storeId: null, email: null };
+  }
   const storeType = String(req.query.storeType || req.user?.storeType || "").trim();
   const storeId = req.query.storeId !== undefined && req.query.storeId !== null
     ? String(req.query.storeId).trim() || storeType
@@ -488,10 +299,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const normalizedEmail = String(email).trim().toLowerCase();
-
-  const users = await readJson(resourceFiles.users);
-  const user = users.find((u) => String(u.email).toLowerCase() === normalizedEmail);
+  const user = await usersQueries.findByEmailWithPassword(email);
   if (!user) {
     req.rateLimit.recordFailure();
     return res.status(401).json({ error: "Invalid email or password" });
@@ -511,8 +319,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   req.rateLimit.clear();
 
   const sessionId = crypto.randomBytes(24).toString("hex");
-  sessions.set(sessionId, user.id);
-  await persistSessions();
+  await sessionsQueries.put(sessionId, user.id);
   res.cookie("sessionId", sessionId, getCookieOptions());
   // XSRF token cookie: same lifetime/flags as the session cookie but JS-
   // readable (not HttpOnly). The frontend echoes it as the X-CSRF-Token
@@ -530,11 +337,10 @@ app.post("/api/login", loginLimiter, async (req, res) => {
 
 app.post("/api/logout", async (req, res) => {
   if (req.cookies.sessionId) {
-    sessions.delete(req.cookies.sessionId);
     try {
-      await persistSessions();
+      await sessionsQueries.remove(req.cookies.sessionId);
     } catch (err) {
-      console.warn("Failed to persist sessions after logout:", err.message);
+      console.warn("Failed to remove session after logout:", err.message);
     }
   }
   res.clearCookie("sessionId", { path: "/" });
@@ -546,8 +352,8 @@ app.get("/api/auth/user", ensureAuth, async (req, res) => {
 });
 
 app.get("/api/register/available", async (req, res) => {
-  const users = await readJson(resourceFiles.users);
-  const available = users.length === 0;
+  const totalUsers = await usersQueries.count();
+  const available = totalUsers === 0;
   res.json({ available, isFirstUser: available });
 });
 
@@ -561,30 +367,34 @@ app.post("/api/register", registerLimiter, async (req, res) => {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+  const totalUsers = await usersQueries.count();
+  const isFirstUser = totalUsers === 0;
+
+  if (await usersQueries.existsByEmail(email)) {
     return res.status(400).json({ error: "Email already exists" });
   }
 
-  const isFirstUser = users.length === 0;
   const hashed = bcrypt.hashSync(password, 10);
-  const now = new Date().toISOString();
-  const newUser = {
-    id: Date.now(),
-    email: String(email).toLowerCase(),
-    password: hashed,
+
+  const created = await usersQueries.create({
+    email,
+    passwordHash: hashed,
     role: isFirstUser ? "SUPER_OWNER" : rest.role || "STORE_ADMIN",
     storeType: isFirstUser ? "system" : String(rest.storeType || "retail"),
     storeId: isFirstUser ? null : rest.storeId || rest.storeType || null,
     approved: true,
     status: "approved",
-    createdAt: now,
-    updatedAt: now,
-    ...rest,
-  };
-  users.push(newUser);
-  await writeJson(resourceFiles.users, users);
-  res.json(sanitizeUser(newUser));
+    name: rest.name || null,
+    phone: rest.phone || null,
+    address: rest.address || null,
+  });
+
+  if (!created) {
+    // UNIQUE constraint race (two concurrent registers). Treat as duplicate.
+    return res.status(400).json({ error: "Email already exists" });
+  }
+
+  res.json(sanitizeUser(created));
 });
 
 const ROLE_MANAGEMENT = {
@@ -608,21 +418,12 @@ const getOwnershipFields = (currentUser) => {
 };
 
 app.get("/api/users", ensureAuth, async (req, res) => {
-  const users = await readJson(resourceFiles.users);
-  let filteredUsers = users;
-
   if (req.user.role === "SUPER_OWNER") {
-    filteredUsers = users;
-  } else {
-    filteredUsers = users.filter((user) => {
-      return (
-        String(user.storeType) === String(req.user.storeType) &&
-        String(user.storeId) === String(req.user.storeId)
-      );
-    });
+    return res.json(sanitizeUsers(await usersQueries.listAll()));
   }
-
-  return res.json(sanitizeUsers(filteredUsers));
+  return res.json(
+    sanitizeUsers(await usersQueries.listByStore(req.user.storeType, req.user.storeId))
+  );
 });
 
 app.post("/api/users", ensureAuth, async (req, res) => {
@@ -650,78 +451,79 @@ app.post("/api/users", ensureAuth, async (req, res) => {
     return res.status(400).json({ error: "Store ID is required for non-super-owner users" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  if (users.some((u) => String(u.email).toLowerCase() === String(email).toLowerCase())) {
+  if (await usersQueries.existsByEmail(email)) {
     return res.status(400).json({ error: "Email already exists" });
   }
 
-  const now = new Date().toISOString();
   const hashed = bcrypt.hashSync(password, 10);
   const ownership = getOwnershipFields(currentUser);
-
   const status = approved ? "approved" : "pending";
 
-  const newUser = {
-    id: Date.now(),
-    email: String(email).toLowerCase(),
-    password: hashed,
+  const created = await usersQueries.create({
+    email,
+    passwordHash: hashed,
     role,
     storeType: role === "SUPER_OWNER" ? "system" : String(storeType),
     storeId: role === "SUPER_OWNER" ? null : String(storeId),
     approved,
     status,
-    createdAt: now,
-    updatedAt: now,
-    ...ownership,
-    ...rest,
-  };
+    ownerEmail: ownership.ownerEmail,
+    rootOwnerEmail: ownership.rootOwnerEmail,
+    name: rest.name,
+    phone: rest.phone,
+    address: rest.address,
+  });
 
-  users.push(newUser);
-  await writeJson(resourceFiles.users, users);
-  return res.json(sanitizeUser(newUser));
+  if (!created) {
+    // UNIQUE-constraint race
+    return res.status(400).json({ error: "Email already exists" });
+  }
+  return res.json(sanitizeUser(created));
 });
 
 app.put("/api/users/:id", ensureAuth, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
   const updates = req.body || {};
-  const users = await readJson(resourceFiles.users);
-  const index = users.findIndex((user) => String(user.id) === String(id));
 
-  if (index === -1) {
+  const targetUser = await usersQueries.findById(id);
+  if (!targetUser) {
     return res.status(404).json({ error: "User not found" });
   }
 
-  const targetUser = users[index];
   if (!canManageRole(currentUser.role, targetUser.role) && currentUser.role !== "SUPER_OWNER") {
     return res.status(403).json({ error: "Insufficient permissions to update this user" });
   }
 
   if (updates.email && updates.email !== targetUser.email) {
-    if (users.some((u) => String(u.email).toLowerCase() === String(updates.email).toLowerCase() && String(u.id) !== String(id))) {
+    if (await usersQueries.existsByEmail(updates.email)) {
       return res.status(400).json({ error: "Email already exists" });
     }
   }
 
-  if (updates.password) {
-    updates.password = bcrypt.hashSync(updates.password, 10);
-  }
+  // Map camelCase → snake_case for the queries module.
+  const patch = {};
+  if (updates.email) patch.email = String(updates.email).toLowerCase();
+  if (updates.role) patch.role = updates.role;
+  if (updates.storeType !== undefined) patch.store_type = updates.storeType;
+  if (updates.storeId !== undefined) patch.store_id = updates.storeId;
+  if (updates.ownerEmail !== undefined) patch.owner_email = updates.ownerEmail;
+  if (updates.rootOwnerEmail !== undefined) patch.root_owner_email = updates.rootOwnerEmail;
+  if (updates.approved !== undefined) patch.approved = !!updates.approved;
+  if (updates.status) patch.status = updates.status;
+  if (updates.name !== undefined) patch.name = updates.name;
+  if (updates.phone !== undefined) patch.phone = updates.phone;
+  if (updates.address !== undefined) patch.address = updates.address;
+  if (updates.password) patch.password = bcrypt.hashSync(updates.password, 10);
 
-  users[index] = {
-    ...targetUser,
-    ...updates,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await writeJson(resourceFiles.users, users);
-  return res.json(sanitizeUser(users[index]));
+  const updated = await usersQueries.update(id, patch);
+  return res.json(sanitizeUser(updated));
 });
 
 app.delete("/api/users/:id", ensureAuth, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
-  const users = await readJson(resourceFiles.users);
-  const targetUser = users.find((user) => String(user.id) === String(id));
+  const targetUser = await usersQueries.findById(id);
 
   if (!targetUser) {
     return res.status(404).json({ error: "User not found" });
@@ -731,8 +533,7 @@ app.delete("/api/users/:id", ensureAuth, async (req, res) => {
     return res.status(403).json({ error: "Insufficient permissions to delete this user" });
   }
 
-  const nextUsers = users.filter((user) => String(user.id) !== String(id));
-  await writeJson(resourceFiles.users, nextUsers);
+  await usersQueries.deleteById(id);
   return res.json({ ok: true });
 });
 
@@ -755,8 +556,9 @@ app.post("/api/password-reset/request", resetRequestLimiter, async (req, res) =>
 
   if (!normalized) return res.json(generic);
 
-  const users = await readJson(resourceFiles.users);
-  const user = users.find((u) => String(u.email).toLowerCase() === normalized);
+  // Existence check via MySQL — existence is all we need here; the token
+  // is the only thing this endpoint hands out.
+  const user = await usersQueries.findByEmailWithPassword(normalized);
   if (!user) return res.json(generic);
 
   const token = crypto.randomBytes(32).toString("hex");
@@ -805,20 +607,16 @@ app.post("/api/password-reset/confirm", async (req, res) => {
     return res.status(400).json({ error: "Token does not match the supplied email" });
   }
 
-  const users = await readJson(resourceFiles.users);
-  const index = users.findIndex((u) => String(u.email).toLowerCase() === normalized);
-  if (index === -1) {
+  // Verify the user still exists, then update the password via MySQL.
+  const user = await usersQueries.findByEmailWithPassword(normalized);
+  if (!user) {
     // Edge case: user was deleted between request and confirm.
     resetTokens.delete(trimmedToken);
     return res.status(404).json({ error: "User no longer exists" });
   }
-
-  users[index] = {
-    ...users[index],
+  await usersQueries.update(user.id, {
     password: bcrypt.hashSync(newPassword, 10),
-    updatedAt: new Date().toISOString(),
-  };
-  await writeJson(resourceFiles.users, users);
+  });
 
   // Single-use: invalidate the token immediately so a leaked token can't be
   // replayed after a successful reset.
@@ -828,104 +626,99 @@ app.post("/api/password-reset/confirm", async (req, res) => {
 });
 
 app.get("/api/store-settings", ensureAuth, async (req, res) => {
-  const settings = await readJson(resourceFiles["store-settings"]);
-  if (isScopedStoreSettingsData(settings)) {
-    const scopeKey = getStoreSettingsScopeKey(req);
-    return res.json(settings[scopeKey] || settings.global || {});
-  }
-  res.json(settings);
+  const scopeKey = getStoreSettingsScopeKey(req);
+  // Try the requested scope first, then fall back to 'global' so the
+  // first GET after a fresh install returns an empty object instead of
+  // a 404-shaped response.
+  const payload =
+    (await storeSettingsQueries.getPayloadByScopeKey(scopeKey)) ??
+    (await storeSettingsQueries.getPayloadByScopeKey("global")) ??
+    {};
+  res.json(payload);
 });
 
 app.post("/api/store-settings", ensureAuth, async (req, res) => {
   const payload = req.body || {};
-  const existing = await readJson(resourceFiles["store-settings"]);
   const scopeKey = getStoreSettingsScopeKey(req);
-  const hasScopeFromQuery = Boolean(req.query.storeType || req.query.storeId);
-
-  if (isScopedStoreSettingsData(existing)) {
-    const next = { ...existing, [scopeKey]: payload };
-    await writeJson(resourceFiles["store-settings"], next);
-    return res.json(payload);
-  }
-
-  if (hasScopeFromQuery) {
-    const next = { global: existing, [scopeKey]: payload };
-    await writeJson(resourceFiles["store-settings"], next);
-    return res.json(payload);
-  }
-
-  await writeJson(resourceFiles["store-settings"], payload);
-  res.json(payload);
+  const { storeType, storeId } = getRequestScope(req);
+  const scopeType = scopeKey === "global" ? "global" : "store";
+  const saved = await storeSettingsQueries.upsert({
+    scopeKey,
+    scopeType,
+    storeType,
+    storeId,
+    payload,
+  });
+  res.json(saved ?? {});
 });
 
-app.get("/api/hotel/checkout-history", ensureAuth, (req, res) => {
-  res.json(hotelStore.checkoutHistory);
+app.get("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
+  res.json(await hotelQueries.getSlice("checkout-history"));
 });
 
-app.get("/api/hotel/dining-bills", ensureAuth, (req, res) => {
-  res.json(hotelStore.diningBills);
+app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
+  res.json(await hotelQueries.getSlice("dining-bills"));
 });
 
-app.get("/api/hotel/:resource", ensureAuth, (req, res) => {
+app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
-  res.json(hotelStore[resource]);
+  res.json(await hotelQueries.getSlice(resource));
 });
 
 app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
   const item = { id: Date.now(), ...req.body };
-  hotelStore[resource].push(item);
-  await persistHotelStore();
+  await hotelQueries.pushItem(resource, item);
   res.json(item);
 });
 
 app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
-  hotelStore.checkoutHistory = [];
-  await persistHotelStore();
+  await hotelQueries.clearSlice("checkout-history");
   res.json({ ok: true });
 });
 
 app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (!Object.prototype.hasOwnProperty.call(hotelStore, resource)) {
+  if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
-  hotelStore[resource] = hotelStore[resource].filter((item) => String(item.id) !== String(req.params.id));
-  await persistHotelStore();
-  res.json({ ok: true });
+  const removed = await hotelQueries.removeItem(resource, req.params.id);
+  res.json({ ok: removed });
 });
 
 app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
   const payload = req.body || {};
-  const existing = hotelStore.diningBills.find((item) => String(item.id) === String(tableId));
+  const bills = await hotelQueries.getSlice("dining-bills");
+  const existing = bills.find((item) => String(item.id) === String(tableId));
+  let next;
   if (existing) {
-    Object.assign(existing, payload);
-    await persistHotelStore();
-    return res.json(existing);
+    next = { ...existing, ...payload };
+    const filtered = bills.filter((b) => String(b.id) !== String(tableId));
+    filtered.push(next);
+    await hotelQueries.replaceSlice("dining-bills", filtered);
+  } else {
+    next = { id: tableId, ...payload };
+    bills.push(next);
+    await hotelQueries.replaceSlice("dining-bills", bills);
   }
-  const item = { id: tableId, ...payload };
-  hotelStore.diningBills.push(item);
-  await persistHotelStore();
-  res.json(item);
+  res.json(next);
 });
 
 app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
-  hotelStore.diningBills = hotelStore.diningBills.filter((item) => String(item.id) !== String(tableId));
-  await persistHotelStore();
-  res.json({ ok: true });
+  const removed = await hotelQueries.removeItem("dining-bills", tableId);
+  res.json({ ok: removed });
 });
 
 app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
-  const invoices = await readJson(resourceFiles.invoices);
-  const invoice = invoices.find((item) => String(item.invoiceNo) === String(req.params.invoiceNo));
+  const invoice = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
   if (!invoice) {
     return res.status(404).json({ error: "Not found" });
   }
@@ -939,17 +732,13 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
 // was race-prone across concurrent cashiers.
 //
 // Flow:
-//   1. readJson(products) chains on pendingWrites (see readJson) so we see
-//      the latest committed stock.
-//   2. Validate stock per line item. Any failure → 409 with no writes.
-//   3. writeJson(products, decremented) — chained behind any in-flight write.
-//   4. writeJson(invoices, [...existing, newInvoice]).
-//
-// Failure modes:
-//   - 409 insufficient stock → nothing mutated.
-//   - 500 between steps 3 and 4 → stock decremented but invoice not saved.
-//     The reverse order (invoice first, products second) would be worse: a
-//     customer is charged for an item that wasn't actually deducted.
+//   1. SELECT ... FOR UPDATE locks each product row before validation,
+//      serializing concurrent cashiers against the same stock.
+//   2. Validate stock per line item. Any failure → 409, ROLLBACK, no writes.
+//   3. UPDATE products SET stock = stock - ? WHERE id = ? per line.
+//   4. INSERT INTO invoices ... in the same transaction.
+//   5. COMMIT. On any thrown error the transaction rolls back and no
+//      partial state is committed.
 const resolveCheckoutQuantity = (item) => {
   const unit = String(item.unit || "").toLowerCase();
   if (unit === "kg") {
@@ -1001,154 +790,80 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
     if (err) return res.status(400).json({ error: err });
   }
 
-  const products = await readJson(resourceFiles.products);
-  const productsById = new Map(products.map((p) => [String(p.id), p]));
-
-  // 1. Validate every line item against current stock.
-  for (const item of items) {
-    const product = productsById.get(String(item.id));
-    if (!product) {
-      return res.status(404).json({
-        error: "Product not found",
-        productId: item.id,
-        productName: item.name,
-      });
-    }
-    const requested = resolveCheckoutQuantity(item);
-    if (requested <= 0) {
-      return res.status(400).json({
-        error: "Invalid quantity",
-        productId: item.id,
-        productName: product.name,
-        requested,
-      });
-    }
-    const available = Number(product.stock) || 0;
-    if (available < requested) {
-      return res.status(409).json({
-        error: "Insufficient stock",
-        productId: item.id,
-        productName: product.name,
-        available,
-        requested,
-      });
-    }
+  const scope = getRequestScope(req);
+  try {
+    const result = await invoicesQueries.createWithStockDecrement(
+      invoice,
+      resolveCheckoutQuantity,
+      scope
+    );
+    return res.status(201).json(result);
+  } catch (err) {
+    // Map domain errors thrown by the queries module to HTTP responses.
+    // Anything else is a 500 (handled by the global error handler below).
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message,
+      productId: err.productId,
+      productName: err.productName,
+      requested: err.requested,
+      available: err.available,
+    });
   }
-
-  // 2. Decrement stock and capture updated values for the response.
-  const updatedStock = [];
-  const updatedProducts = products.map((product) => {
-    // Only adjust products that appear as line items.
-    const lineItem = items.find((it) => String(it.id) === String(product.id));
-    if (!lineItem) return product;
-    const requested = resolveCheckoutQuantity(lineItem);
-    const nextStock = +(Number(product.stock) - requested).toFixed(3);
-    updatedStock.push({ id: product.id, name: product.name, stock: nextStock });
-    return {
-      ...product,
-      stock: nextStock,
-      updatedAt: new Date().toISOString(),
-    };
-  });
-
-  // 3. Persist products first (so a crash here leaves no invoice but stock is
-  //    decremented — recoverable). See Part 2b note in the plan.
-  await writeJson(resourceFiles.products, updatedProducts);
-
-  // 4. Persist invoice.
-  const invoices = await readJson(resourceFiles.invoices);
-  const { storeType, storeId, email } = getRequestScope(req);
-  const now = new Date().toISOString();
-  const savedInvoice = {
-    id: Date.now(),
-    createdAt: now,
-    updatedAt: now,
-    ...invoice,
-  };
-  if (storeType) savedInvoice._storeType = storeType;
-  if (storeId) savedInvoice._storeId = storeId;
-  if (email) savedInvoice._userEmail = email;
-  invoices.push(savedInvoice);
-  await writeJson(resourceFiles.invoices, invoices);
-
-  res.status(201).json({ invoice: savedInvoice, updatedStock });
 });
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const items = await readJson(filename);
-  res.json(filterByQuery(items, req.query));
+  // Every resource in this codebase has a MySQL-backed query module;
+  // unknown resources 404. Add new resources by extending mysqlResources.
+  const mysqlQueries = mysqlResources[resource];
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  const items = await mysqlQueries.list(scope, req.query);
+  return res.json(items);
 });
 
 app.post("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const items = await readJson(filename);
-  const now = new Date().toISOString();
-  const { storeType, storeId, email } = getRequestScope(req);
-  const item = {
-    id: Date.now(),
-    createdAt: now,
-    updatedAt: now,
-    ...req.body,
-  };
-  if (storeType) item._storeType = storeType;
-  if (storeId) item._storeId = storeId;
-  if (email) item._userEmail = email;
-  items.push(item);
-  await writeJson(filename, items);
-  res.json(item);
+  const mysqlQueries = mysqlResources[resource];
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  const created = await mysqlQueries.create(req.body || {}, scope);
+  return res.json(created);
 });
 
 app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
+  const mysqlQueries = mysqlResources[resource];
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  if (typeof mysqlQueries.findByIdScoped !== "function") {
+    // Some query modules only expose findById (no scope variant). Fall
+    // back to that — no scope enforcement, matching the JSON path.
+    const existing = await mysqlQueries.findById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else {
+    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
   }
-  const items = await readJson(filename);
-  const { storeType, storeId, email } = getRequestScope(req);
-  const index = items.findIndex((item) => {
-    if (String(item.id) !== String(id)) return false;
-    if (!matchesStoreScope(item, storeType, storeId)) return false;
-    if (email && String(item._userEmail || item.email || "") !== String(email)) return false;
-    return true;
-  });
-  if (index === -1) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  items[index] = {
-    ...items[index],
-    ...req.body,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeJson(filename, items);
-  res.json(items[index]);
+  const updated = await mysqlQueries.update(id, req.body || {});
+  return res.json(updated);
 });
 
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
+  const mysqlQueries = mysqlResources[resource];
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  if (typeof mysqlQueries.findByIdScoped === "function") {
+    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else {
+    const existing = await mysqlQueries.findById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
   }
-  const { storeType, storeId, email } = getRequestScope(req);
-  const items = await readJson(filename);
-  const nextItems = items.filter((item) => {
-    if (String(item.id) !== String(id)) return true;
-    if (!matchesStoreScope(item, storeType, storeId)) return true;
-    if (email && String(item._userEmail || item.email || "") !== String(email)) return true;
-    return false;
-  });
-  await writeJson(filename, nextItems);
-  res.json({ ok: true });
+  const deleted = await mysqlQueries.deleteById(id);
+  return res.json({ ok: deleted });
 });
 
 app.use((req, res) => {
@@ -1173,13 +888,12 @@ process.on("uncaughtException", (err) => {
 });
 
 const startServer = async () => {
-  await loadSessions();
-  await loadHotelStore();
+  // Sessions live in MySQL (sessions table) — no in-memory load needed.
+  // Hotel state lives in MySQL (hotel_state singleton) — no in-memory
+  // load needed. The MySQL-backed routes read fresh on every request.
   app.listen(PORT, () => {
-    console.log(`Backend scaffold listening on http://localhost:${PORT}`);
+    console.log(`Backend (MySQL) listening on http://localhost:${PORT}`);
     console.log(`Frontend origin allowed: ${FRONTEND_ORIGIN}`);
-    console.log("Sessions loaded from disk.");
-    console.log("Hotel state loaded from disk.");
   });
 };
 
