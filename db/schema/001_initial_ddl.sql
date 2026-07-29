@@ -1,49 +1,24 @@
 -- =============================================================================
--- POS Billing — MySQL schema
+-- POS Billing — MySQL DDL (tables only)
 -- -----------------------------------------------------------------------------
--- Run order:
---   1. As MySQL root (or any user with CREATE USER + GRANT):
---        source db/schema.sql
---      This script bootstraps the database, the dedicated app user, and every
---      table. It is idempotent — re-running drops nothing, only adds missing
---      pieces.
+-- This file contains ONLY the CREATE TABLE statements. It assumes the database
+-- already exists and the connection has the right privileges.
 --
---   2. In server/.env (create if missing):
---        DB_HOST=localhost
---        DB_PORT=3306
---        DB_USER=pos_billing_app
---        DB_PASSWORD=<set-this>
---        DB_NAME=pos_billing
+-- Apply with one of:
+--   mysql pos_billing < schema/001_initial_ddl.sql
+--   mysql -h <host> -P <port> -u <user> -p pos_billing < schema/001_initial_ddl.sql
 --
---   3. Restart `npm start` in server/. The pool in db/pool.js will connect
---      with the credentials above.
+-- For a localhost bootstrap (creates DB + user too), apply in order:
+--   mysql -u root -p < schema/002_bootstrap_local.sql
+--   mysql -u root -p < schema/001_initial_ddl.sql
+--
+-- For Railway / PlanetScale / Aiven / Render-managed MySQL:
+--   - The provider creates the database and user for you.
+--   - Just connect with the provided URL and apply this file.
 --
 -- Source of truth for column shapes: server/data/*.json + server/index.js.
 -- If a JSON field is missing on a given row, the column is NULL.
 -- =============================================================================
-
--- -----------------------------------------------------------------------------
--- 0. Database + dedicated user
--- -----------------------------------------------------------------------------
--- The dedicated user has ONLY grants on `pos_billing.*` — no global privileges,
--- no GRANT OPTION. Root access is not used by app code at any point.
-
-CREATE DATABASE IF NOT EXISTS `pos_billing`
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
-
--- Create the app user. Skip-if-exists keeps the script idempotent.
--- NOTE: Replace 'CHANGE_ME_app_password' with the real password before running
--- in any environment. In dev, copy this file to schema.local.sql and .gitignore
--- it so the real password never gets committed.
-CREATE USER IF NOT EXISTS 'pos_billing_app'@'localhost'
-  IDENTIFIED BY 'CHANGE_ME_app_password';
-
-GRANT SELECT, INSERT, UPDATE, DELETE
-  ON `pos_billing`.*
-  TO 'pos_billing_app'@'localhost';
-
-FLUSH PRIVILEGES;
 
 USE `pos_billing`;
 
