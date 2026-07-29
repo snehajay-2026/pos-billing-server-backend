@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1781528626231,
+    "createdAt": "2026-06-15T13:03:46.231Z",
+    "read": false,
+    "email": "meena@gmail.com",
+    "type": "password_reset_requested",
+    "message": "Password reset requested. Use the recovery token to reset your password."
+  },
+  {
+    "id": 1781528567237,
+    "createdAt": "2026-06-15T13:02:47.237Z",
+    "read": false,
+    "email": "meena@gmail.com",
+    "type": "password_reset_requested",
+    "message": "Password reset requested. Use the recovery token to reset your password."
+  }
+]

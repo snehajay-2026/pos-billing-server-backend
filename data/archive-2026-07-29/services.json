@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1783768521311,
+    "createdAt": "2026-07-11T11:15:21.311Z",
+    "updatedAt": "2026-07-11T11:15:21.311Z",
+    "name": "Ink",
+    "description": "Delivery",
+    "rate": 500,
+    "hours": 2,
+    "gst": 19,
+    "category": "Other",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "anuj@gmail.com"
+  },
+  {
+    "id": 1783768941748,
+    "createdAt": "2026-07-11T11:22:21.748Z",
+    "updatedAt": "2026-07-11T11:22:21.748Z",
+    "name": "Ink",
+    "description": "Delivery",
+    "rate": 500,
+    "hours": 2,
+    "gst": 18,
+    "category": "Other",
+    "_storeType": "service",
+    "_storeId": "Anuj-Service",
+    "_userEmail": "ajaykodag47@gmail.com"
+  }
+]
