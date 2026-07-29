@@ -37,7 +37,6 @@ const mysqlResources = {
 const app = express();
 const PORT = process.env.PORT || 4000;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
-const DATA_DIR = path.join(__dirname, "data");
 
 const isAllowedOrigin = (origin) => {
   if (!origin) return false;
@@ -61,19 +60,6 @@ const isAllowedOrigin = (origin) => {
   }
 };
 
-const resourceFiles = {
-  users: "users.json",
-  products: "products.json",
-  services: "services.json",
-  expenses: "expenses.json",
-  orders: "orders.json",
-  invoices: "invoices.json",
-  notifications: "notifications.json",
-  "customer-credits": "customerCredits.json",
-  customers: "customers.json",
-  "store-settings": "storeSettings.json",
-};
-
 const hotelResourceMap = {
   "checkout-history": "checkoutHistory",
   "dining-bills": "diningBills",
@@ -84,13 +70,6 @@ const hotelResourceMap = {
 };
 
 const resolveHotelResource = (resource) => hotelResourceMap[resource] || resource;
-
-const sessions = new Map(); // legacy in-memory store — kept as a stub so any
-// upstream reference that survived the migration doesn't blow up. Reads
-// happen via sessionsQueries.get(), writes via sessionsQueries.put(),
-// removes via sessionsQueries.remove(). The Map is never read.
-const loadSessions = async () => {};
-const persistSessions = async () => {};
 
 // In-memory password-reset token store. Same volatility as `sessions` —
 // tokens die on server restart. Production migration target: a DB row with
@@ -159,100 +138,9 @@ const buildRateLimiter = ({ store, windowMs, lockoutMs, maxAttempts, keyFn, erro
     next();
   };
 };
-const pendingWrites = new Map();
 
 const asyncHandler = (fn) => (req, res, next) => {
   Promise.resolve(fn(req, res, next)).catch(next);
-};
-
-const getDataFilePath = (filename) => path.join(DATA_DIR, filename);
-const getTempFilePath = (filename) => path.join(DATA_DIR, `${filename}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`);
-
-const readJson = async (filename) => {
-  const filePath = getDataFilePath(filename);
-  // Read-your-writes: if there's an in-flight write to this same path, await it
-  // so the read observes the latest committed state. Without this, a concurrent
-  // reader can bypass a write that's mid-rename and see stale data — which
-  // breaks atomic checkout (validate stock against current stock).
-  await pendingWrites.get(filePath);
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    return JSON.parse(raw || "[]");
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      return [];
-    }
-    if (err instanceof SyntaxError || /Unexpected token|Unexpected end of JSON input/.test(err.message)) {
-      const backupPath = path.join(DATA_DIR, `${filename}.corrupt.${Date.now()}.bak`);
-      await fs.copyFile(filePath, backupPath).catch(() => {});
-      console.error(`Data corruption detected in ${filename}. Backed up corrupted file to ${backupPath}.`);
-      const error = new Error(`Data file ${filename} is corrupted. Restore from backup ${path.basename(backupPath)}.`);
-      error.status = 500;
-      throw error;
-    }
-    throw err;
-  }
-};
-
-const writeJson = async (filename, data) => {
-  const filePath = getDataFilePath(filename);
-  const tempFilePath = getTempFilePath(filename);
-  const payload = JSON.stringify(data, null, 2);
-
-  // Why we write to a sibling temp file then rename (and the Windows fix below):
-  //   - Atomic write semantics: readers either see the previous content or the
-  //     new content, never a half-written file.
-  //   - On POSIX, rename() is atomic by spec — works fine.
-  //   - On Windows, rename() across the same directory is *usually* atomic, but
-  //     antivirus / indexer / another open handle can hold the target briefly
-  //     and fail with EPERM. We've seen this spam the logs in dev.
-  //
-  // Strategy:
-  //   1. Try temp+rename (fast path on POSIX + clean Windows).
-  //   2. If rename fails with EPERM/EBUSY, fall back to a direct overwrite of
-  //      the target file. Direct writes still truncate-then-write atomically
-  //      enough for our single-writer-per-store scenario, and they survive
-  //      Windows' handle contention where rename doesn't.
-  //   3. Always clean up the temp file in finally.
-  const writeOp = async () => {
-    await fs.writeFile(tempFilePath, payload, "utf8");
-    try {
-      await fs.rename(tempFilePath, filePath);
-    } catch (renameErr) {
-      const code = renameErr && renameErr.code;
-      const isWindowsLock =
-        code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (!isWindowsLock) throw renameErr;
-
-      // Fallback: direct overwrite. Open with 'w' to truncate, then write.
-      const handle = await fs.open(filePath, "w");
-      try {
-        await handle.writeFile(payload, "utf8");
-        await handle.sync().catch(() => {});
-      } finally {
-        await handle.close().catch(() => {});
-      }
-    }
-  };
-
-  const previous = pendingWrites.get(filePath) || Promise.resolve();
-  const next = previous.finally(async () => {
-    try {
-      await writeOp();
-    } finally {
-      // Always clean up any leftover temp file regardless of outcome.
-      await fs.rm(tempFilePath, { force: true }).catch(() => {});
-    }
-  });
-
-  pendingWrites.set(filePath, next);
-  next.finally(() => {
-    if (pendingWrites.get(filePath) === next) {
-      pendingWrites.delete(filePath);
-    }
-  });
-
-  return next;
 };
 
 const sanitizeUser = (user) => {
@@ -276,45 +164,6 @@ const ensureAuth = async (req, res, next) => {
   }
   req.user = user;
   next();
-};
-
-const queryToItemKey = {
-  storeType: "_storeType",
-  storeId: "_storeId",
-  email: "_userEmail",
-};
-
-const matchesStoreScope = (item, storeType, storeId) => {
-  if (String(item._storeType || item.storeType || "").trim() !== String(storeType || "").trim()) {
-    return false;
-  }
-  if (storeId !== undefined && storeId !== null && String(storeId).trim() !== "") {
-    if (item._storeId !== undefined && String(item._storeId).trim() !== String(storeId).trim()) {
-      return false;
-    }
-    if (item.storeId !== undefined && String(item.storeId).trim() !== String(storeId).trim()) {
-      return false;
-    }
-  }
-  return true;
-};
-
-const filterByQuery = (items, query) => {
-  const queryKeys = Object.keys(query).filter((key) => query[key] !== undefined && query[key] !== "");
-  if (!queryKeys.length) return items;
-  return items.filter((item) => {
-    return queryKeys.every((key) => {
-      const mappedKey = queryToItemKey[key] || key;
-      const value = query[key];
-      if (mappedKey === "_storeType" || mappedKey === "_storeId" || mappedKey === "_userEmail") {
-        return String(item[mappedKey] || item[key] || "") === String(value);
-      }
-      if (typeof item[mappedKey] === "object") {
-        return JSON.stringify(item[mappedKey]) === JSON.stringify(value);
-      }
-      return String(item[mappedKey]) === String(value);
-    });
-  });
 };
 
 const getRequestScope = (req) => {
@@ -883,17 +732,13 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
 // was race-prone across concurrent cashiers.
 //
 // Flow:
-//   1. readJson(products) chains on pendingWrites (see readJson) so we see
-//      the latest committed stock.
-//   2. Validate stock per line item. Any failure → 409 with no writes.
-//   3. writeJson(products, decremented) — chained behind any in-flight write.
-//   4. writeJson(invoices, [...existing, newInvoice]).
-//
-// Failure modes:
-//   - 409 insufficient stock → nothing mutated.
-//   - 500 between steps 3 and 4 → stock decremented but invoice not saved.
-//     The reverse order (invoice first, products second) would be worse: a
-//     customer is charged for an item that wasn't actually deducted.
+//   1. SELECT ... FOR UPDATE locks each product row before validation,
+//      serializing concurrent cashiers against the same stock.
+//   2. Validate stock per line item. Any failure → 409, ROLLBACK, no writes.
+//   3. UPDATE products SET stock = stock - ? WHERE id = ? per line.
+//   4. INSERT INTO invoices ... in the same transaction.
+//   5. COMMIT. On any thrown error the transaction rolls back and no
+//      partial state is committed.
 const resolveCheckoutQuantity = (item) => {
   const unit = String(item.unit || "").toLowerCase();
   if (unit === "kg") {
@@ -969,121 +814,56 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
-  // MySQL-backed resources short-circuit here. Everything else still goes
-  // through the JSON path. Add new MySQL resources by extending mysqlResources.
+  // Every resource in this codebase has a MySQL-backed query module;
+  // unknown resources 404. Add new resources by extending mysqlResources.
   const mysqlQueries = mysqlResources[resource];
-  if (mysqlQueries) {
-    const scope = getRequestScope(req);
-    const items = await mysqlQueries.list(scope, req.query);
-    return res.json(items);
-  }
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const items = await readJson(filename);
-  res.json(filterByQuery(items, req.query));
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  const items = await mysqlQueries.list(scope, req.query);
+  return res.json(items);
 });
 
 app.post("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (mysqlQueries) {
-    const scope = getRequestScope(req);
-    const created = await mysqlQueries.create(req.body || {}, scope);
-    return res.json(created);
-  }
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const items = await readJson(filename);
-  const now = new Date().toISOString();
-  const { storeType, storeId, email } = getRequestScope(req);
-  const item = {
-    id: Date.now(),
-    createdAt: now,
-    updatedAt: now,
-    ...req.body,
-  };
-  if (storeType) item._storeType = storeType;
-  if (storeId) item._storeId = storeId;
-  if (email) item._userEmail = email;
-  items.push(item);
-  await writeJson(filename, items);
-  res.json(item);
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  const created = await mysqlQueries.create(req.body || {}, scope);
+  return res.json(created);
 });
 
 app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (mysqlQueries) {
-    const scope = getRequestScope(req);
-    if (typeof mysqlQueries.findByIdScoped !== "function") {
-      // Some query modules only expose findById (no scope variant). Fall
-      // back to that — no scope enforcement, matching the JSON path.
-      const existing = await mysqlQueries.findById(id);
-      if (!existing) return res.status(404).json({ error: "Not found" });
-    } else {
-      const existing = await mysqlQueries.findByIdScoped(id, scope);
-      if (!existing) return res.status(404).json({ error: "Not found" });
-    }
-    const updated = await mysqlQueries.update(id, req.body || {});
-    return res.json(updated);
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  if (typeof mysqlQueries.findByIdScoped !== "function") {
+    // Some query modules only expose findById (no scope variant). Fall
+    // back to that — no scope enforcement, matching the JSON path.
+    const existing = await mysqlQueries.findById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else {
+    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
   }
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const items = await readJson(filename);
-  const { storeType, storeId, email } = getRequestScope(req);
-  const index = items.findIndex((item) => {
-    if (String(item.id) !== String(id)) return false;
-    if (!matchesStoreScope(item, storeType, storeId)) return false;
-    if (email && String(item._userEmail || item.email || "") !== String(email)) return false;
-    return true;
-  });
-  if (index === -1) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  items[index] = {
-    ...items[index],
-    ...req.body,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeJson(filename, items);
-  res.json(items[index]);
+  const updated = await mysqlQueries.update(id, req.body || {});
+  return res.json(updated);
 });
 
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (mysqlQueries) {
-    const scope = getRequestScope(req);
-    if (typeof mysqlQueries.findByIdScoped === "function") {
-      const existing = await mysqlQueries.findByIdScoped(id, scope);
-      if (!existing) return res.status(404).json({ error: "Not found" });
-    } else {
-      const existing = await mysqlQueries.findById(id);
-      if (!existing) return res.status(404).json({ error: "Not found" });
-    }
-    const deleted = await mysqlQueries.deleteById(id);
-    return res.json({ ok: deleted });
+  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  const scope = getRequestScope(req);
+  if (typeof mysqlQueries.findByIdScoped === "function") {
+    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else {
+    const existing = await mysqlQueries.findById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
   }
-  const filename = resourceFiles[resource];
-  if (!filename) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  const { storeType, storeId, email } = getRequestScope(req);
-  const items = await readJson(filename);
-  const nextItems = items.filter((item) => {
-    if (String(item.id) !== String(id)) return true;
-    if (!matchesStoreScope(item, storeType, storeId)) return true;
-    if (email && String(item._userEmail || item.email || "") !== String(email)) return true;
-    return false;
-  });
-  await writeJson(filename, nextItems);
-  res.json({ ok: true });
+  const deleted = await mysqlQueries.deleteById(id);
+  return res.json({ ok: deleted });
 });
 
 app.use((req, res) => {
