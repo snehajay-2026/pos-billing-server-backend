@@ -23,6 +23,7 @@ const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
 const paymentsQueries = require("./db/queries/payments");
 const reportsQueries = require("./db/queries/reports");
+const inventoryQueries = require("./db/queries/inventory");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1194,19 +1195,117 @@ app.post("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
 app.delete("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
 
 // Inventory — suppliers, purchase orders, stock movements, low-stock alert.
-const inventoryNotImpl = (sub) => notImplemented(`inventory/${sub}`);
-app.get("/api/suppliers", ensureAuth, inventoryNotImpl("suppliers"));
-app.post("/api/suppliers", ensureAuth, inventoryNotImpl("suppliers"));
-app.put("/api/suppliers/:id", ensureAuth, inventoryNotImpl("suppliers"));
-app.delete("/api/suppliers/:id", ensureAuth, inventoryNotImpl("suppliers"));
-app.get("/api/purchase-orders", ensureAuth, inventoryNotImpl("purchase-orders"));
-app.post("/api/purchase-orders", ensureAuth, inventoryNotImpl("purchase-orders"));
-app.put("/api/purchase-orders/:id", ensureAuth, inventoryNotImpl("purchase-orders"));
-app.delete("/api/purchase-orders/:id", ensureAuth, inventoryNotImpl("purchase-orders"));
-app.post("/api/purchase-orders/:id/receive", ensureAuth, inventoryNotImpl("purchase-orders/receive"));
-app.get("/api/stock-movements", ensureAuth, inventoryNotImpl("stock-movements"));
-app.post("/api/stock-movements", ensureAuth, inventoryNotImpl("stock-movements"));
-app.get("/api/inventory/low-stock", ensureAuth, inventoryNotImpl("inventory/low-stock"));
+// Admin-only writes; reads scoped by storeType/storeId. Receive PO bumps
+// products.stock and appends one stock_movement (type='in') per item.
+
+const requireInventoryAdmin = (req, res) => {
+  const role = String(req.user?.role || "").toUpperCase();
+  // CASHIER can read inventory but not write to it.
+  if (req.method !== "GET" && role === "CASHIER") {
+    res.status(403).json({ error: "Inventory writes are admin-only" });
+    return false;
+  }
+  return true;
+};
+
+const getInvScope = (req) => {
+  const scope = getRequestScope(req);
+  return {
+    storeType: scope.storeType || req.user?.storeType || null,
+    storeId: scope.storeId || req.user?.storeId || null,
+    email: scope.email || req.user?.email || null,
+  };
+};
+
+// === Suppliers =============================================================
+
+app.get("/api/suppliers", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  res.json(await inventoryQueries.listSuppliers(getInvScope(req)));
+});
+
+app.post("/api/suppliers", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const supplier = await inventoryQueries.createSupplier(req.body || {}, getInvScope(req));
+  if (!supplier) return res.status(400).json({ error: "name is required" });
+  res.json(supplier);
+});
+
+app.put("/api/suppliers/:id", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const supplier = await inventoryQueries.updateSupplier(req.params.id, req.body || {});
+  if (!supplier) return res.status(404).json({ error: "Supplier not found" });
+  res.json(supplier);
+});
+
+app.delete("/api/suppliers/:id", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const ok = await inventoryQueries.deleteSupplier(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Supplier not found" });
+  res.json({ ok: true });
+});
+
+// === Purchase Orders =======================================================
+
+app.get("/api/purchase-orders", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  res.json(await inventoryQueries.listPurchaseOrders(getInvScope(req), req.query));
+});
+
+app.post("/api/purchase-orders", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const po = await inventoryQueries.createPurchaseOrder(req.body || {}, getInvScope(req));
+  if (!po) return res.status(400).json({ error: "poNumber is required" });
+  // Decorate with items so the frontend gets them in one shot.
+  const items = await inventoryQueries.listPoItems(po.id);
+  res.json({ ...po, items });
+});
+
+app.put("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const po = await inventoryQueries.updatePurchaseOrder(req.params.id, req.body || {});
+  if (!po) return res.status(404).json({ error: "Purchase order not found" });
+  res.json(po);
+});
+
+app.delete("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const ok = await inventoryQueries.deletePurchaseOrder(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Purchase order not found" });
+  res.json({ ok: true });
+});
+
+app.post("/api/purchase-orders/:id/receive", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const po = await inventoryQueries.receivePurchaseOrder(req.params.id);
+  if (!po) return res.status(404).json({ error: "Purchase order not found" });
+  res.json(po);
+});
+
+// === Stock Movements =======================================================
+
+app.get("/api/stock-movements", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  res.json(await inventoryQueries.listStockMovements(getInvScope(req), req.query));
+});
+
+app.post("/api/stock-movements", ensureAuth, async (req, res) => {
+  if (!requireInventoryAdmin(req, res)) return;
+  const movement = await inventoryQueries.createStockMovement(
+    { ...(req.body || {}), createdBy: req.user.id },
+    getInvScope(req)
+  );
+  if (!movement) {
+    return res.status(400).json({ error: "productId, type (in|out|adjustment) and positive quantity required" });
+  }
+  res.json(movement);
+});
+
+// === Low-stock alerts ======================================================
+
+app.get("/api/inventory/low-stock", ensureAuth, async (req, res) => {
+  res.json(await inventoryQueries.lowStockAlerts(getInvScope(req)));
+});
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
