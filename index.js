@@ -55,13 +55,12 @@ const isAllowedOrigin = (origin) => {
     // browser sends it with the protocol — comparing parsed (protocol,
     // hostname) handles both forms.
     if (FRONTEND_ORIGIN) {
-      try {
-        const allowed = new URL(FRONTEND_ORIGIN);
-        if (parsed.protocol === allowed.protocol && parsed.hostname === allowed.hostname) {
-          return true;
-        }
-      } catch {
-        // FRONTEND_ORIGIN was malformed; fall through to the dev allowlist.
+      // FRONTEND_ORIGIN may be set with or without a scheme ("example.com"
+      // vs "https://example.com"). Normalize to a hostname for comparison.
+      const envValue = String(FRONTEND_ORIGIN).trim();
+      const envHostname = envValue.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+      if (envHostname && hostname === envHostname) {
+        return true;
       }
     }
 
