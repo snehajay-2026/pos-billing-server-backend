@@ -50,6 +50,21 @@ const isAllowedOrigin = (origin) => {
       return true;
     }
 
+    // Allow origins that match FRONTEND_ORIGIN after normalization. The
+    // env var on Render was set without the https:// prefix once and the
+    // browser sends it with the protocol — comparing parsed (protocol,
+    // hostname) handles both forms.
+    if (FRONTEND_ORIGIN) {
+      try {
+        const allowed = new URL(FRONTEND_ORIGIN);
+        if (parsed.protocol === allowed.protocol && parsed.hostname === allowed.hostname) {
+          return true;
+        }
+      } catch {
+        // FRONTEND_ORIGIN was malformed; fall through to the dev allowlist.
+      }
+    }
+
     if ((hostname === "localhost" || hostname === "127.0.0.1") && (protocol === "http:" || protocol === "https:")) {
       return true;
     }
