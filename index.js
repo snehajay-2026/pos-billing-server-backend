@@ -682,6 +682,42 @@ app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
   res.json(await hotelQueries.getSlice("dining-bills"));
 });
 
+// Hotel module-locks — must be registered BEFORE /api/hotel/:resource so
+// Express doesn't route module-locks to the catch-all.
+app.get("/api/hotel/module-locks", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can list all hotel module locks" });
+  }
+  res.json(await hotelModuleLocksQueries.listAll());
+});
+
+app.get("/api/hotel/module-locks/me", ensureAuth, async (req, res) => {
+  res.json(await hotelModuleLocksQueries.getMyLocks(req.user.email));
+});
+
+app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can flip hotel module locks" });
+  }
+  const { customerEmail, module } = req.params;
+  const { locked } = req.body || {};
+  if (typeof locked !== "boolean") {
+    return res.status(400).json({ error: "Body must be {locked: true|false}" });
+  }
+  const updated = await hotelModuleLocksQueries.setLock(
+    decodeURIComponent(customerEmail),
+    module,
+    locked,
+    req.user.email
+  );
+  if (!updated) {
+    return res.status(400).json({
+      error: "Invalid module (must be lodging|dining|liveBill) or missing customerEmail",
+    });
+  }
+  res.json(updated);
+});
+
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
   // module-locks has its own explicit routes above; if it slips through
@@ -986,48 +1022,9 @@ app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
 });
 
 // Hotel module-locks — single-user-at-a-time gate per hotel module.
-// Super Owner can list + flip any customer's lock; every other role reads
-// their own lock state via /me.
-//
-// Frontend contract:
-//   GET /api/hotel/module-locks           -> [{customerEmail, module, locked, ...}, ...]
-//   GET /api/hotel/module-locks/me        -> {lodging, dining, liveBill, customerEmail}
-//   PUT /api/hotel/module-locks/:email/:module body:{locked:true|false}
-//                                          -> updated row
-app.get("/api/hotel/module-locks", ensureAuth, async (req, res) => {
-  if (req.user?.role !== "SUPER_OWNER") {
-    return res.status(403).json({ error: "Only Super Owner can list all hotel module locks" });
-  }
-  res.json(await hotelModuleLocksQueries.listAll());
-});
-
-app.get("/api/hotel/module-locks/me", ensureAuth, async (req, res) => {
-  // Frontend contract: {lodging, dining, liveBill, customerEmail}
-  res.json(await hotelModuleLocksQueries.getMyLocks(req.user.email));
-});
-
-app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req, res) => {
-  if (req.user?.role !== "SUPER_OWNER") {
-    return res.status(403).json({ error: "Only Super Owner can flip hotel module locks" });
-  }
-  const { customerEmail, module } = req.params;
-  const { locked } = req.body || {};
-  if (typeof locked !== "boolean") {
-    return res.status(400).json({ error: "Body must be {locked: true|false}" });
-  }
-  const updated = await hotelModuleLocksQueries.setLock(
-    decodeURIComponent(customerEmail),
-    module,
-    locked,
-    req.user.email
-  );
-  if (!updated) {
-    return res.status(400).json({
-      error: "Invalid module (must be lodging|dining|liveBill) or missing customerEmail",
-    });
-  }
-  res.json(updated);
-});
+// Handlers are registered earlier (before /api/hotel/:resource catch-all)
+// so this stub block is intentionally empty — kept here as a marker for
+// future contributors who might be looking for these endpoints.
 
 // Payments — payment intents, mark-paid/failed, etc.
 app.get("/api/payments/methods", ensureAuth, notImplemented("payments/methods"));
