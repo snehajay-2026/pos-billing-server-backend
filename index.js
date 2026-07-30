@@ -353,7 +353,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     maxAge: 1000 * 60 * 60 * 24,
     path: "/",
   });
-  res.json(sanitizeUser(user));
+  res.json({ ...sanitizeUser(user), csrfToken });
 });
 
 app.post("/api/logout", async (req, res) => {
