@@ -682,6 +682,14 @@ app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
+  // module-locks is intentionally NOT in hotelResourceMap — it has its
+  // own stub (501) below; let that handle it instead of 404 here.
+  if (req.params.resource === "module-locks" || req.params.resource.startsWith("module-locks")) {
+    return res.status(501).json({
+      error: `Endpoint /api/hotel/${req.params.resource} not implemented yet`,
+      resource: req.params.resource,
+    });
+  }
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
@@ -690,6 +698,12 @@ app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
 
 app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
+  if (req.params.resource === "module-locks" || req.params.resource.startsWith("module-locks")) {
+    return res.status(501).json({
+      error: `Endpoint POST /api/hotel/${req.params.resource} not implemented yet`,
+      resource: req.params.resource,
+    });
+  }
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
@@ -832,12 +846,91 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
   }
 });
 
+// === STUB ROUTES for endpoints planned but not yet ported to MySQL ===
+// These return 501 Not Implemented with a clear message so the frontend
+// gets a predictable shape instead of an unhelpful 404. Real handlers
+// will replace these one-by-one as the corresponding query modules land.
+
+const notImplemented = (resource) => (req, res) => {
+  res.status(501).json({
+    error: `Endpoint /api/${resource} not implemented yet`,
+    resource,
+    hint: "MySQL data layer is wired for the 8 core resources (products, services, expenses, orders, invoices, customers, customer-credits, notifications) plus users, store-settings, sessions, hotel slices. Shifts, module-locks, payments, reports, audit-log, laundry, inventory are planned but pending.",
+  });
+};
+
+// Shifts — /api/shifts/active is called on every page mount by useShiftGate
+// and triggers 404 noise otherwise. Returning 501 here lets the frontend
+// fall back gracefully.
+app.get("/api/shifts/active", ensureAuth, notImplemented("shifts/active"));
+app.get("/api/shifts", ensureAuth, notImplemented("shifts"));
+app.post("/api/shifts", ensureAuth, notImplemented("shifts"));
+app.get("/api/shifts/:shiftId", ensureAuth, notImplemented("shifts/:id"));
+app.post("/api/shifts/:shiftId/close", ensureAuth, notImplemented("shifts/:id/close"));
+app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, notImplemented("shifts/:id/cash-movements"));
+app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, notImplemented("shifts/:id/cash-movements"));
+app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, notImplemented("shifts/:id/reconciliation"));
+app.get("/api/shifts/:shiftId/summary", ensureAuth, notImplemented("shifts/:id/summary"));
+
+// Hotel module-locks — single-user-at-a-time gate per hotel module.
+app.get("/api/hotel/module-locks", ensureAuth, notImplemented("hotel/module-locks"));
+app.get("/api/hotel/module-locks/me", ensureAuth, notImplemented("hotel/module-locks/me"));
+app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, notImplemented("hotel/module-locks/:customerEmail/:module"));
+
+// Payments — payment intents, mark-paid/failed, etc.
+app.get("/api/payments/methods", ensureAuth, notImplemented("payments/methods"));
+app.post("/api/payments/intent", ensureAuth, notImplemented("payments/intent"));
+app.get("/api/payments/intent/:id", ensureAuth, notImplemented("payments/intent/:id"));
+app.post("/api/payments/intent/:id/mark-paid", ensureAuth, notImplemented("payments/intent/:id/mark-paid"));
+app.post("/api/payments/intent/:id/mark-failed", ensureAuth, notImplemented("payments/intent/:id/mark-failed"));
+app.post("/api/payments/intent/:id/simulate-payment", ensureAuth, notImplemented("payments/intent/:id/simulate-payment"));
+
+// Reports — sales / GST / P&L + CSV export.
+app.get("/api/reports/sales", ensureAuth, notImplemented("reports/sales"));
+app.get("/api/reports/gst", ensureAuth, notImplemented("reports/gst"));
+app.get("/api/reports/pnl", ensureAuth, notImplemented("reports/pnl"));
+app.get("/api/reports/export", ensureAuth, notImplemented("reports/export"));
+
+// Audit log — append-only event stream.
+app.get("/api/audit-log", ensureAuth, notImplemented("audit-log"));
+
+// Laundry — token counter + ledger.
+app.get("/api/laundry/token-counter", ensureAuth, notImplemented("laundry/token-counter"));
+app.post("/api/laundry/token-counter", ensureAuth, notImplemented("laundry/token-counter"));
+app.get("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
+app.post("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
+app.delete("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
+
+// Inventory — suppliers, purchase orders, stock movements, low-stock alert.
+const inventoryNotImpl = (sub) => notImplemented(`inventory/${sub}`);
+app.get("/api/suppliers", ensureAuth, inventoryNotImpl("suppliers"));
+app.post("/api/suppliers", ensureAuth, inventoryNotImpl("suppliers"));
+app.put("/api/suppliers/:id", ensureAuth, inventoryNotImpl("suppliers"));
+app.delete("/api/suppliers/:id", ensureAuth, inventoryNotImpl("suppliers"));
+app.get("/api/purchase-orders", ensureAuth, inventoryNotImpl("purchase-orders"));
+app.post("/api/purchase-orders", ensureAuth, inventoryNotImpl("purchase-orders"));
+app.put("/api/purchase-orders/:id", ensureAuth, inventoryNotImpl("purchase-orders"));
+app.delete("/api/purchase-orders/:id", ensureAuth, inventoryNotImpl("purchase-orders"));
+app.post("/api/purchase-orders/:id/receive", ensureAuth, inventoryNotImpl("purchase-orders/receive"));
+app.get("/api/stock-movements", ensureAuth, inventoryNotImpl("stock-movements"));
+app.post("/api/stock-movements", ensureAuth, inventoryNotImpl("stock-movements"));
+app.get("/api/inventory/low-stock", ensureAuth, inventoryNotImpl("inventory/low-stock"));
+
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   // Every resource in this codebase has a MySQL-backed query module;
-  // unknown resources 404. Add new resources by extending mysqlResources.
+  // unknown resources return 501 with a clear "not implemented yet"
+  // message rather than 404 — these endpoints are intentionally planned,
+  // they just haven't been wired to MySQL yet (shifts, module-locks,
+  // payments, reports, audit-log, laundry, inventory).
   const mysqlQueries = mysqlResources[resource];
-  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  if (!mysqlQueries) {
+    return res.status(501).json({
+      error: `Endpoint /api/${resource} not implemented yet`,
+      resource,
+      hint: "This endpoint was ported from JSON storage but the MySQL data layer + route are still pending. See server/db/queries/ for the gap.",
+    });
+  }
   const scope = getRequestScope(req);
   const items = await mysqlQueries.list(scope, req.query);
   return res.json(items);
@@ -846,7 +939,12 @@ app.get("/api/:resource", ensureAuth, async (req, res) => {
 app.post("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  if (!mysqlQueries) {
+    return res.status(501).json({
+      error: `Endpoint POST /api/${resource} not implemented yet`,
+      resource,
+    });
+  }
   const scope = getRequestScope(req);
   const created = await mysqlQueries.create(req.body || {}, scope);
   return res.json(created);
@@ -855,7 +953,12 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
 app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  if (!mysqlQueries) {
+    return res.status(501).json({
+      error: `Endpoint PUT /api/${resource}/:id not implemented yet`,
+      resource,
+    });
+  }
   const scope = getRequestScope(req);
   if (typeof mysqlQueries.findByIdScoped !== "function") {
     // Some query modules only expose findById (no scope variant). Fall
@@ -873,7 +976,12 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
   const mysqlQueries = mysqlResources[resource];
-  if (!mysqlQueries) return res.status(404).json({ error: "Not found" });
+  if (!mysqlQueries) {
+    return res.status(501).json({
+      error: `Endpoint DELETE /api/${resource}/:id not implemented yet`,
+      resource,
+    });
+  }
   const scope = getRequestScope(req);
   if (typeof mysqlQueries.findByIdScoped === "function") {
     const existing = await mysqlQueries.findByIdScoped(id, scope);
