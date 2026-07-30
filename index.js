@@ -19,6 +19,7 @@ const notificationsQueries = require("./db/queries/notifications");
 const storeSettingsQueries = require("./db/queries/store-settings");
 const hotelQueries = require("./db/queries/hotel");
 const sessionsQueries = require("./db/queries/sessions");
+const shiftsQueries = require("./db/queries/shifts");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -859,18 +860,134 @@ const notImplemented = (resource) => (req, res) => {
   });
 };
 
-// Shifts — /api/shifts/active is called on every page mount by useShiftGate
-// and triggers 404 noise otherwise. Returning 501 here lets the frontend
-// fall back gracefully.
-app.get("/api/shifts/active", ensureAuth, notImplemented("shifts/active"));
-app.get("/api/shifts", ensureAuth, notImplemented("shifts"));
-app.post("/api/shifts", ensureAuth, notImplemented("shifts"));
-app.get("/api/shifts/:shiftId", ensureAuth, notImplemented("shifts/:id"));
-app.post("/api/shifts/:shiftId/close", ensureAuth, notImplemented("shifts/:id/close"));
-app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, notImplemented("shifts/:id/cash-movements"));
-app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, notImplemented("shifts/:id/cash-movements"));
-app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, notImplemented("shifts/:id/reconciliation"));
-app.get("/api/shifts/:shiftId/summary", ensureAuth, notImplemented("shifts/:id/summary"));
+// === Shifts ================================================================
+// /api/shifts/active is called on every page mount by the frontend's
+// useShiftGate hook. /api/shifts is also used for the OpenShiftDialog.
+//
+// The cash-vertical rule is enforced in the route, not the query — the
+// query module just reads whatever it gets. Routes return 409 for non-cash
+// store types so the frontend can hide the shift UI without needing to
+// know which verticals are cash-bearing.
+//
+// Cash verticals: retail, hotel, laundry, service, msme-service,
+// inventory. Anything else (system, hospital, school) returns 409.
+
+const CASH_VERTICALS = new Set([
+  "retail",
+  "hotel",
+  "laundry",
+  "service",
+  "msme-service",
+  "inventory",
+]);
+
+const requireCashVertical = (req, res) => {
+  const scope = getRequestScope(req);
+  // SUPER_OWNER impersonating without an explicit storeType → no shift UI.
+  // Otherwise fall back to the user's own storeType.
+  const storeType = scope.storeType || req.user?.storeType || "";
+  if (!storeType || !CASH_VERTICALS.has(String(storeType).toLowerCase())) {
+    res.status(409).json({
+      error: "Shifts are not used in this store type",
+      storeType: storeType || null,
+    });
+    return null;
+  }
+  return scope;
+};
+
+app.get("/api/shifts/active", ensureAuth, async (req, res) => {
+  const scope = requireCashVertical(req, res);
+  if (!scope) return;
+  const shift = await shiftsQueries.getActiveForUser(
+    req.user.id,
+    scope.storeType,
+    scope.storeId
+  );
+  res.json(shift || null);
+});
+
+app.get("/api/shifts", ensureAuth, async (req, res) => {
+  const scope = requireCashVertical(req, res);
+  if (!scope) return;
+  const filters = { ...req.query };
+  // Pass userId only when explicitly requested. By default scope list
+  // shows all shifts in the store (not just the current user's), since
+  // Admins/SuperOwners need to see cashier shifts for monitoring.
+  const shifts = await shiftsQueries.list(scope, filters);
+  res.json(shifts);
+});
+
+app.post("/api/shifts", ensureAuth, async (req, res) => {
+  const scope = requireCashVertical(req, res);
+  if (!scope) return;
+  const { openingFloat = 0, notes = null } = req.body || {};
+  // Refuse to open a second shift for the same user/store while one is open.
+  const existing = await shiftsQueries.getActiveForUser(
+    req.user.id,
+    scope.storeType,
+    scope.storeId
+  );
+  if (existing) {
+    return res.status(409).json({
+      error: "A shift is already open for this user/store",
+      shift: existing,
+    });
+  }
+  const shift = await shiftsQueries.open({
+    userId: req.user.id,
+    storeType: scope.storeType,
+    storeId: scope.storeId,
+    openingFloat,
+    notes,
+  });
+  res.json(shift);
+});
+
+app.get("/api/shifts/:shiftId", ensureAuth, async (req, res) => {
+  const shift = await shiftsQueries.findById(req.params.shiftId);
+  if (!shift) return res.status(404).json({ error: "Shift not found" });
+  res.json(shift);
+});
+
+app.post("/api/shifts/:shiftId/close", ensureAuth, async (req, res) => {
+  const { closingCash = 0, closeNotes = null } = req.body || {};
+  const shift = await shiftsQueries.close(req.params.shiftId, { closingCash, closeNotes });
+  if (!shift) return res.status(404).json({ error: "Shift not found" });
+  res.json(shift);
+});
+
+app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
+  const movements = await shiftsQueries.listCashMovements(req.params.shiftId);
+  res.json(movements);
+});
+
+app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
+  const { type, amount, reason = null } = req.body || {};
+  const updated = await shiftsQueries.addCashMovement(req.params.shiftId, {
+    type,
+    amount,
+    reason,
+  });
+  if (!updated) {
+    return res
+      .status(404)
+      .json({ error: "Shift not found or already closed, or invalid movement type" });
+  }
+  res.json(updated);
+});
+
+app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, async (req, res) => {
+  const recon = await shiftsQueries.reconciliation(req.params.shiftId);
+  if (!recon) return res.status(404).json({ error: "Shift not found" });
+  res.json(recon);
+});
+
+app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
+  const summary = await shiftsQueries.summary(req.params.shiftId);
+  if (!summary) return res.status(404).json({ error: "Shift not found" });
+  res.json(summary);
+});
 
 // Hotel module-locks — single-user-at-a-time gate per hotel module.
 app.get("/api/hotel/module-locks", ensureAuth, notImplemented("hotel/module-locks"));
