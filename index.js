@@ -21,6 +21,7 @@ const hotelQueries = require("./db/queries/hotel");
 const sessionsQueries = require("./db/queries/sessions");
 const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
+const paymentsQueries = require("./db/queries/payments");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1027,12 +1028,69 @@ app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
 // future contributors who might be looking for these endpoints.
 
 // Payments — payment intents, mark-paid/failed, etc.
-app.get("/api/payments/methods", ensureAuth, notImplemented("payments/methods"));
-app.post("/api/payments/intent", ensureAuth, notImplemented("payments/intent"));
-app.get("/api/payments/intent/:id", ensureAuth, notImplemented("payments/intent/:id"));
-app.post("/api/payments/intent/:id/mark-paid", ensureAuth, notImplemented("payments/intent/:id/mark-paid"));
-app.post("/api/payments/intent/:id/mark-failed", ensureAuth, notImplemented("payments/intent/:id/mark-failed"));
-app.post("/api/payments/intent/:id/simulate-payment", ensureAuth, notImplemented("payments/intent/:id/simulate-payment"));
+// payment_intents.id is client-generated (uuid-like). The same id can be
+// POSTed twice safely: a duplicate INSERT returns the existing row.
+
+const generateIntentId = () =>
+  `pi_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+app.get("/api/payments/methods", ensureAuth, async (req, res) => {
+  res.json(await paymentsQueries.listMethods());
+});
+
+app.post("/api/payments/intent", ensureAuth, async (req, res) => {
+  const { amount, method = "upi", invoiceNo = null, note = null } = req.body || {};
+  if (amount == null || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
+    return res.status(400).json({ error: "amount (positive number) is required" });
+  }
+  const scope = getRequestScope(req);
+  const intent = await paymentsQueries.create({
+    id: generateIntentId(),
+    amount,
+    method,
+    invoiceNo,
+    note,
+    createdBy: req.user.id,
+    storeType: scope.storeType,
+    storeId: scope.storeId,
+  });
+  if (!intent) {
+    return res.status(400).json({ error: "Invalid payment method" });
+  }
+  res.json(intent);
+});
+
+app.get("/api/payments/intent/:id", ensureAuth, async (req, res) => {
+  const intent = await paymentsQueries.findById(req.params.id);
+  if (!intent) return res.status(404).json({ error: "Intent not found" });
+  res.json(intent);
+});
+
+app.post("/api/payments/intent/:id/mark-paid", ensureAuth, async (req, res) => {
+  const { note = null } = req.body || {};
+  const intent = await paymentsQueries.setStatus(req.params.id, "paid", note);
+  if (!intent) return res.status(404).json({ error: "Intent not found or invalid status" });
+  res.json(intent);
+});
+
+app.post("/api/payments/intent/:id/mark-failed", ensureAuth, async (req, res) => {
+  const { note = null } = req.body || {};
+  const intent = await paymentsQueries.setStatus(req.params.id, "failed", note);
+  if (!intent) return res.status(404).json({ error: "Intent not found or invalid status" });
+  res.json(intent);
+});
+
+// Dev-only — flips a pending intent to paid without a real gateway. Used
+// by the payment dialog's "Simulate payment" button in mock mode.
+app.post("/api/payments/intent/:id/simulate-payment", ensureAuth, async (req, res) => {
+  const existing = await paymentsQueries.findById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Intent not found" });
+  if (existing.status !== "pending") {
+    return res.status(409).json({ error: `Cannot simulate payment on a ${existing.status} intent` });
+  }
+  const intent = await paymentsQueries.setStatus(req.params.id, "paid", "simulated");
+  res.json(intent);
+});
 
 // Reports — sales / GST / P&L + CSV export.
 app.get("/api/reports/sales", ensureAuth, notImplemented("reports/sales"));
