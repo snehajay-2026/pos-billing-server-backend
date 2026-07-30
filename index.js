@@ -25,6 +25,7 @@ const paymentsQueries = require("./db/queries/payments");
 const reportsQueries = require("./db/queries/reports");
 const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
+const auditLogQueries = require("./db/queries/audit-log");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1186,7 +1187,30 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
 });
 
 // Audit log — append-only event stream.
-app.get("/api/audit-log", ensureAuth, notImplemented("audit-log"));
+// Read-only via HTTP. Non-SUPER_OWNER roles are scoped to their own
+// user_id (matches the docstring on auditLogService: the log is
+// per-user, not per-store). SUPER_OWNER can pass userId explicitly to
+// view other users' logs.
+
+app.get("/api/audit-log", ensureAuth, async (req, res) => {
+  const isSuperOwner = req.user?.role === "SUPER_OWNER";
+  // Non-super-owners can only see their own entries; ignore any userId
+  // they pass to avoid leaking other users' logs.
+  const userId = isSuperOwner && req.query.userId
+    ? Number(req.query.userId)
+    : (isSuperOwner ? null : req.user.id);
+  const result = await auditLogQueries.list({
+    userId,
+    action: req.query.action,
+    entityType: req.query.entityType,
+    entityId: req.query.entityId,
+    since: req.query.since,
+    until: req.query.until,
+    limit: req.query.limit,
+    offset: req.query.offset,
+  });
+  res.json(result);
+});
 
 // Laundry — token counter + ledger.
 // Counter is per (day, storeType, storeId); idempotent on writes that
