@@ -22,6 +22,7 @@ const sessionsQueries = require("./db/queries/sessions");
 const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
 const paymentsQueries = require("./db/queries/payments");
+const reportsQueries = require("./db/queries/reports");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1093,10 +1094,94 @@ app.post("/api/payments/intent/:id/simulate-payment", ensureAuth, async (req, re
 });
 
 // Reports — sales / GST / P&L + CSV export.
-app.get("/api/reports/sales", ensureAuth, notImplemented("reports/sales"));
-app.get("/api/reports/gst", ensureAuth, notImplemented("reports/gst"));
-app.get("/api/reports/pnl", ensureAuth, notImplemented("reports/pnl"));
-app.get("/api/reports/export", ensureAuth, notImplemented("reports/export"));
+//
+// Admin-only: CASHIER gets 403 (matches the docstring on reportService).
+// SUPER_OWNER / ADMIN / STORE_ADMIN can read. The export endpoint streams
+// CSV with a Content-Disposition header so the browser saves the file.
+const requireReportAccess = (req, res) => {
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role === "CASHIER") {
+    res.status(403).json({ error: "Reports are admin-only" });
+    return false;
+  }
+  return true;
+};
+
+const toCsv = (rows) => {
+  if (!rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const escape = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [
+    headers.join(","),
+    ...rows.map((r) => headers.map((h) => escape(r[h])).join(",")),
+  ].join("\n");
+};
+
+app.get("/api/reports/sales", ensureAuth, async (req, res) => {
+  if (!requireReportAccess(req, res)) return;
+  res.json(await reportsQueries.salesReport(req.query));
+});
+
+app.get("/api/reports/gst", ensureAuth, async (req, res) => {
+  if (!requireReportAccess(req, res)) return;
+  res.json(await reportsQueries.gstReport(req.query));
+});
+
+app.get("/api/reports/pnl", ensureAuth, async (req, res) => {
+  if (!requireReportAccess(req, res)) return;
+  res.json(await reportsQueries.pnlReport(req.query));
+});
+
+app.get("/api/reports/export", ensureAuth, async (req, res) => {
+  if (!requireReportAccess(req, res)) return;
+  const type = String(req.query.type || "sales");
+  let report;
+  let filename;
+  let rows;
+  if (type === "sales") {
+    report = await reportsQueries.salesReport(req.query);
+    filename = `sales-${new Date().toISOString().slice(0, 10)}.csv`;
+    rows = report.buckets.map((b) => ({
+      day: b.day,
+      invoice_count: b.invoiceCount,
+      revenue: b.revenue,
+      gst: b.gst,
+    }));
+  } else if (type === "gst") {
+    report = await reportsQueries.gstReport(req.query);
+    filename = `gst-${new Date().toISOString().slice(0, 10)}.csv`;
+    rows = report.hsns.map((h) => ({
+      hsn: h.hsn,
+      item_count: h.itemCount,
+      taxable: h.taxable,
+      tax: h.tax,
+    }));
+  } else if (type === "pnl") {
+    report = await reportsQueries.pnlReport(req.query);
+    filename = `pnl-${new Date().toISOString().slice(0, 10)}.csv`;
+    rows = report.expensesByCategory.map((e) => ({
+      category: e.category,
+      amount: e.amount,
+    }));
+    // Append a single-row totals row at the bottom so the spreadsheet has
+    // the headline numbers.
+    rows.push({
+      category: "__TOTAL__",
+      amount: report.totals.netProfit,
+    });
+  } else {
+    return res.status(400).json({ error: "type must be one of sales|gst|pnl" });
+  }
+
+  const csv = toCsv(rows);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(csv);
+});
 
 // Audit log — append-only event stream.
 app.get("/api/audit-log", ensureAuth, notImplemented("audit-log"));
