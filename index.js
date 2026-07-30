@@ -20,6 +20,7 @@ const storeSettingsQueries = require("./db/queries/store-settings");
 const hotelQueries = require("./db/queries/hotel");
 const sessionsQueries = require("./db/queries/sessions");
 const shiftsQueries = require("./db/queries/shifts");
+const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -683,13 +684,11 @@ app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  // module-locks is intentionally NOT in hotelResourceMap — it has its
-  // own stub (501) below; let that handle it instead of 404 here.
-  if (req.params.resource === "module-locks" || req.params.resource.startsWith("module-locks")) {
-    return res.status(501).json({
-      error: `Endpoint /api/hotel/${req.params.resource} not implemented yet`,
-      resource: req.params.resource,
-    });
+  // module-locks has its own explicit routes above; if it slips through
+  // here (e.g. /api/hotel/module-locks/extra), return 404 cleanly rather
+  // than hitting hotelQueries.sliceToColumn with a non-mapped name.
+  if (req.params.resource === "module-locks") {
+    return res.status(404).json({ error: "Not found" });
   }
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
@@ -699,11 +698,8 @@ app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
 
 app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
-  if (req.params.resource === "module-locks" || req.params.resource.startsWith("module-locks")) {
-    return res.status(501).json({
-      error: `Endpoint POST /api/hotel/${req.params.resource} not implemented yet`,
-      resource: req.params.resource,
-    });
+  if (req.params.resource === "module-locks") {
+    return res.status(404).json({ error: "Not found" });
   }
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
@@ -990,9 +986,48 @@ app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
 });
 
 // Hotel module-locks — single-user-at-a-time gate per hotel module.
-app.get("/api/hotel/module-locks", ensureAuth, notImplemented("hotel/module-locks"));
-app.get("/api/hotel/module-locks/me", ensureAuth, notImplemented("hotel/module-locks/me"));
-app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, notImplemented("hotel/module-locks/:customerEmail/:module"));
+// Super Owner can list + flip any customer's lock; every other role reads
+// their own lock state via /me.
+//
+// Frontend contract:
+//   GET /api/hotel/module-locks           -> [{customerEmail, module, locked, ...}, ...]
+//   GET /api/hotel/module-locks/me        -> {lodging, dining, liveBill, customerEmail}
+//   PUT /api/hotel/module-locks/:email/:module body:{locked:true|false}
+//                                          -> updated row
+app.get("/api/hotel/module-locks", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can list all hotel module locks" });
+  }
+  res.json(await hotelModuleLocksQueries.listAll());
+});
+
+app.get("/api/hotel/module-locks/me", ensureAuth, async (req, res) => {
+  // Frontend contract: {lodging, dining, liveBill, customerEmail}
+  res.json(await hotelModuleLocksQueries.getMyLocks(req.user.email));
+});
+
+app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can flip hotel module locks" });
+  }
+  const { customerEmail, module } = req.params;
+  const { locked } = req.body || {};
+  if (typeof locked !== "boolean") {
+    return res.status(400).json({ error: "Body must be {locked: true|false}" });
+  }
+  const updated = await hotelModuleLocksQueries.setLock(
+    decodeURIComponent(customerEmail),
+    module,
+    locked,
+    req.user.email
+  );
+  if (!updated) {
+    return res.status(400).json({
+      error: "Invalid module (must be lodging|dining|liveBill) or missing customerEmail",
+    });
+  }
+  res.json(updated);
+});
 
 // Payments — payment intents, mark-paid/failed, etc.
 app.get("/api/payments/methods", ensureAuth, notImplemented("payments/methods"));
