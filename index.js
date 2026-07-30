@@ -24,6 +24,7 @@ const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
 const paymentsQueries = require("./db/queries/payments");
 const reportsQueries = require("./db/queries/reports");
 const inventoryQueries = require("./db/queries/inventory");
+const laundryQueries = require("./db/queries/laundry");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1188,11 +1189,68 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
 app.get("/api/audit-log", ensureAuth, notImplemented("audit-log"));
 
 // Laundry — token counter + ledger.
-app.get("/api/laundry/token-counter", ensureAuth, notImplemented("laundry/token-counter"));
-app.post("/api/laundry/token-counter", ensureAuth, notImplemented("laundry/token-counter"));
-app.get("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
-app.post("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
-app.delete("/api/laundry/ledger", ensureAuth, notImplemented("laundry/ledger"));
+// Counter is per (day, storeType, storeId); idempotent on writes that
+// wouldn't advance the value. Ledger is append-only, scoped to a store.
+
+const getLaundryScope = (req) => {
+  const scope = getRequestScope(req);
+  return {
+    storeType: scope.storeType || req.user?.storeType || null,
+    storeId: scope.storeId || req.user?.storeId || null,
+    email: scope.email || req.user?.email || null,
+  };
+};
+
+app.get("/api/laundry/token-counter", ensureAuth, async (req, res) => {
+  const s = getLaundryScope(req);
+  res.json(await laundryQueries.getCounter({
+    storeType: s.storeType,
+    storeId: s.storeId,
+    day: req.query.day,
+  }));
+});
+
+app.post("/api/laundry/token-counter", ensureAuth, async (req, res) => {
+  const s = getLaundryScope(req);
+  const { value = 0, day } = req.body || {};
+  res.json(await laundryQueries.setCounter({
+    storeType: s.storeType,
+    storeId: s.storeId,
+    day,
+    value,
+  }));
+});
+
+app.get("/api/laundry/ledger", ensureAuth, async (req, res) => {
+  const s = getLaundryScope(req);
+  const limit = Number(req.query.limit) || 200;
+  res.json(await laundryQueries.listLedger({
+    storeType: s.storeType,
+    storeId: s.storeId,
+    limit,
+  }));
+});
+
+app.post("/api/laundry/ledger", ensureAuth, async (req, res) => {
+  const s = getLaundryScope(req);
+  const entry = await laundryQueries.addLedgerEntry({
+    ...(req.body || {}),
+    storeType: s.storeType,
+    storeId: s.storeId,
+    userEmail: s.email,
+  });
+  if (!entry) return res.status(400).json({ error: "productName and numeric delta are required" });
+  res.json(entry);
+});
+
+app.delete("/api/laundry/ledger", ensureAuth, async (req, res) => {
+  const s = getLaundryScope(req);
+  const deleted = await laundryQueries.clearLedger({
+    storeType: s.storeType,
+    storeId: s.storeId,
+  });
+  res.json({ ok: true, deleted });
+});
 
 // Inventory — suppliers, purchase orders, stock movements, low-stock alert.
 // Admin-only writes; reads scoped by storeType/storeId. Receive PO bumps
