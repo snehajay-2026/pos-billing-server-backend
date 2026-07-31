@@ -218,9 +218,18 @@ const getCookieOptions = () => ({
   // SameSite=None cookies must also be Secure in modern browsers.
   // Localhost is treated as a secure context in most browsers, so this works for local dev.
   secure: true,
-  maxAge: 1000 * 60 * 60 * 24,
+  // 30 days — long enough that Safari's ITP doesn't drop the cookie
+  // during typical idle sessions (which has a hard 7-day cap for
+  // cross-site cookies without explicit user interaction). The server
+  // is the source of truth for session expiry (sessions table); this
+  // is just the browser-side retention.
+  maxAge: 1000 * 60 * 60 * 24 * 30,
   path: "/",
   sameParty: false,
+  // Priority=High hint asks the browser to retain the cookie in memory
+  // rather than evict it under storage pressure. Chrome supports this
+  // natively; Safari ignores unknown priority attributes (harmless).
+  priority: "high",
 });
 
 app.use(
@@ -350,7 +359,7 @@ app.post("/api/login", loginLimiter, async (req, res) => {
     httpOnly: false,
     sameSite: "none",
     secure: true,
-    maxAge: 1000 * 60 * 60 * 24,
+    maxAge: 1000 * 60 * 60 * 24 * 30,
     path: "/",
   });
   res.json({ ...sanitizeUser(user), csrfToken });
@@ -384,7 +393,7 @@ app.get("/api/auth/user", ensureAuth, async (req, res) => {
     httpOnly: false,
     sameSite: "none",
     secure: true,
-    maxAge: 1000 * 60 * 60 * 24,
+    maxAge: 1000 * 60 * 60 * 24 * 30,
     path: "/",
   });
   res.json({ ...sanitizeUser(req.user), csrfToken });
