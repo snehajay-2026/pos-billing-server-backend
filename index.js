@@ -375,7 +375,19 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/auth/user", ensureAuth, async (req, res) => {
-  res.json(sanitizeUser(req.user));
+  // Echo a freshly-minted CSRF token on every session re-validation so
+  // tabs that boot from the session cookie (without going through the
+  // /api/login flow) still have a valid token to echo back. The cookie
+  // is also refreshed so subsequent POSTs see a matching pair.
+  const csrfToken = crypto.randomBytes(24).toString("hex");
+  res.cookie("XSRF-TOKEN", csrfToken, {
+    httpOnly: false,
+    sameSite: "none",
+    secure: true,
+    maxAge: 1000 * 60 * 60 * 24,
+    path: "/",
+  });
+  res.json({ ...sanitizeUser(req.user), csrfToken });
 });
 
 app.get("/api/register/available", async (req, res) => {
