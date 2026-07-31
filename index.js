@@ -19,6 +19,8 @@ const notificationsQueries = require("./db/queries/notifications");
 const storeSettingsQueries = require("./db/queries/store-settings");
 const hotelQueries = require("./db/queries/hotel");
 const hotelBookingsQueries = require("./db/queries/hotel-bookings");
+const realtimeHub = require("./realtime/hub");
+const sseHandler = require("./realtime/sse");
 const sessionsQueries = require("./db/queries/sessions");
 const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
@@ -781,24 +783,56 @@ app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
     },
     scope
   );
+  // Broadcast to every connected client in the same store scope so the
+  // booking appears instantly on every other device.
+  realtimeHub.publish(
+    realtimeHub.buildBookingEvent({
+      action: booking && booking.status === "checked_out" ? "checked_out" : "upserted",
+      booking,
+      scope,
+    })
+  );
   res.json(booking);
 });
 
 app.put("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
   const updated = await hotelBookingsQueries.update(req.params.id, req.body || {});
   if (!updated) return res.status(404).json({ error: "Booking not found" });
+  realtimeHub.publish(
+    realtimeHub.buildBookingEvent({
+      action: "updated",
+      booking: updated,
+      scope: { storeType: updated._storeType, storeId: updated._storeId },
+    })
+  );
   res.json(updated);
 });
 
 app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
   const ok = await hotelBookingsQueries.deleteById(req.params.id);
   if (!ok) return res.status(404).json({ error: "Booking not found" });
+  realtimeHub.publish(
+    realtimeHub.buildHotelEvent({
+      action: "deleted",
+      kind: "booking",
+      storeType: req.query.storeType,
+      storeId: req.query.storeId,
+      data: { id: Number(req.params.id) },
+    })
+  );
   res.json({ ok: true });
 });
 
 app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
   const booking = await hotelBookingsQueries.checkout(req.params.id);
   if (!booking) return res.status(404).json({ error: "Booking not found" });
+  realtimeHub.publish(
+    realtimeHub.buildBookingEvent({
+      action: "checked_out",
+      booking,
+      scope: { storeType: booking._storeType, storeId: booking._storeId },
+    })
+  );
   res.json(booking);
 });
 
@@ -809,12 +843,34 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
   if (!kind || !refId) {
     return res.status(400).json({ error: "kind and refId are required" });
   }
-  await hotelBookingsQueries.clearByRefId(kind, refId, {
+  const scope = {
     storeType: storeType || req.query.storeType,
     storeId: storeId || req.query.storeId,
-  });
+  };
+  await hotelBookingsQueries.clearByRefId(kind, refId, scope);
+  realtimeHub.publish(
+    realtimeHub.buildHotelEvent({
+      action: "checked_out",
+      kind: "booking",
+      storeType: scope.storeType,
+      storeId: scope.storeId,
+      data: { kind, refId },
+    })
+  );
   res.json({ ok: true });
 });
+
+// === Real-time sync (SSE) ===================================================
+// Native EventSource on the client. Long-lived HTTP/1.1 chunked response
+// that survives proxies (Render, Cloudflare) better than WebSocket.
+// One connection per browser tab. Client connects on app mount, listens
+// for `booking` / `hotel` events, and merges them into local state.
+
+app.get("/api/events", ensureAuth, sseHandler);
+
+// Friendly alias for the SSE endpoint so we can disambiguate it from
+// other /api/* in production logs and reverse proxies.
+app.get("/api/sse", ensureAuth, sseHandler);
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
@@ -873,12 +929,33 @@ app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
     bills.push(next);
     await hotelQueries.replaceSlice("dining-bills", bills);
   }
+  // Live-bill change broadcasts to every connected client in the same
+  // store so the matching Room/Table + Live Bill item updates on every
+  // device simultaneously.
+  realtimeHub.publish(
+    realtimeHub.buildHotelEvent({
+      action: "live_bill_updated",
+      kind: "live_bill",
+      storeType: req.query.storeType,
+      storeId: req.query.storeId,
+      data: { tableId, bill: next },
+    })
+  );
   res.json(next);
 });
 
 app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
   const removed = await hotelQueries.removeItem("dining-bills", tableId);
+  realtimeHub.publish(
+    realtimeHub.buildHotelEvent({
+      action: "live_bill_cleared",
+      kind: "live_bill",
+      storeType: req.query.storeType,
+      storeId: req.query.storeId,
+      data: { tableId },
+    })
+  );
   res.json({ ok: removed });
 });
 
