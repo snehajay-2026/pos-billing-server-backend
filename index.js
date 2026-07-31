@@ -18,6 +18,7 @@ const customerCreditsQueries = require("./db/queries/customer-credits");
 const notificationsQueries = require("./db/queries/notifications");
 const storeSettingsQueries = require("./db/queries/store-settings");
 const hotelQueries = require("./db/queries/hotel");
+const hotelBookingsQueries = require("./db/queries/hotel-bookings");
 const sessionsQueries = require("./db/queries/sessions");
 const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
@@ -742,6 +743,77 @@ app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req
     });
   }
   res.json(updated);
+});
+
+// === Hotel bookings (per-store, per-room-or-table) =========================
+// Replaces the JSON-blob approach in hotel_state.tables. Each row is a
+// real booking with proper store scoping so two devices logging into
+// the same store see the same reservations.
+//
+// Routes are registered BEFORE /api/hotel/:resource catch-all so they
+// don't fall through.
+
+app.get("/api/hotel/bookings", ensureAuth, async (req, res) => {
+  const bookings = await hotelBookingsQueries.listByStore({
+    storeType: req.query.storeType,
+    storeId: req.query.storeId,
+    kind: req.query.kind,
+    status: req.query.status,
+  });
+  res.json(bookings);
+});
+
+app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
+  const body = req.body || {};
+  if (!["dining", "lodging"].includes(String(body.kind))) {
+    return res.status(400).json({ error: "kind must be 'dining' or 'lodging'" });
+  }
+  // scope comes from query params (frontend sends storeType + storeId on
+  // every booking API call); fall back to the requesting user's store.
+  const scope = {
+    storeType: req.query.storeType || req.user?.storeType || "hotel",
+    storeId: req.query.storeId || req.user?.storeId || "hotel",
+  };
+  const booking = await hotelBookingsQueries.upsert(
+    {
+      ...body,
+      createdBy: body.createdBy || req.user?.email,
+    },
+    scope
+  );
+  res.json(booking);
+});
+
+app.put("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+  const updated = await hotelBookingsQueries.update(req.params.id, req.body || {});
+  if (!updated) return res.status(404).json({ error: "Booking not found" });
+  res.json(updated);
+});
+
+app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+  const ok = await hotelBookingsQueries.deleteById(req.params.id);
+  if (!ok) return res.status(404).json({ error: "Booking not found" });
+  res.json({ ok: true });
+});
+
+app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
+  const booking = await hotelBookingsQueries.checkout(req.params.id);
+  if (!booking) return res.status(404).json({ error: "Booking not found" });
+  res.json(booking);
+});
+
+// Free-up endpoint: marks a (kind, refId) booking as checked_out without
+// needing the database id. Used when the cashier finishes a table or room.
+app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => {
+  const { kind, refId, storeType, storeId } = req.body || {};
+  if (!kind || !refId) {
+    return res.status(400).json({ error: "kind and refId are required" });
+  }
+  await hotelBookingsQueries.clearByRefId(kind, refId, {
+    storeType: storeType || req.query.storeType,
+    storeId: storeId || req.query.storeId,
+  });
+  res.json({ ok: true });
 });
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
