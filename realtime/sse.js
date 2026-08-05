@@ -39,10 +39,12 @@ const sseHandler = (req, res) => {
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Headers", "Cache-Control");
   }
-  res.flushHeaders?.();
-
-  // Drop the Express Content-Length: SSE is chunked by definition.
+  // Commit headers + status code via writeHead, THEN flushHeaders.
+  // Previously flushHeaders() was called first and writeHead(200) was
+  // silently ignored (you can't call writeHead on an already-flushed
+  // response), so the SSE stream returned an empty body.
   res.writeHead(200);
+  res.flushHeaders();
 
   // Initial hello + recent-event replay so the client catches up
   // immediately on connect.
