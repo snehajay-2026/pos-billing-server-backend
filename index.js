@@ -1039,6 +1039,42 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
       resolveCheckoutQuantity,
       scope
     );
+    // Broadcast the new invoice so other cashiers / admins in the same
+    // store see live sales activity without polling.
+    realtimeHub.publish(
+      realtimeHub.buildInvoiceEvent({
+        action: "created",
+        invoice: result,
+        scope,
+      })
+    );
+    // After the decrement, peek at each line item and emit a stock event
+    // for any product that just crossed (or sits at/below) its low_stock
+    // threshold. One event per affected product so the client's toast
+    // queue stays clean.
+    const products = require("./db/queries/products");
+    const affected = Array.isArray(result?.affectedProducts)
+      ? result.affectedProducts
+      : (Array.isArray(result?.items) ? result.items : []);
+    for (const line of affected) {
+      const productId = line.productId || line.id;
+      if (!productId) continue;
+      const product = await products.findById(productId);
+      if (!product) continue;
+      const stock = Number(product.stock) || 0;
+      const lowStock = Number(product.lowStock) || 0;
+      if (lowStock > 0 && stock <= lowStock) {
+        realtimeHub.publish(
+          realtimeHub.buildStockEvent({
+            action: "created",
+            movement: { source: "invoice-checkout", invoiceNo: invoice.invoiceNo, productId, type: "out", quantity: line.qty || line.quantity || 0 },
+            product: { id: product.id, name: product.name, stock, lowStock },
+            crossedLowStock: true,
+            scope,
+          })
+        );
+      }
+    }
     return res.status(201).json(result);
   } catch (err) {
     // Map domain errors thrown by the queries module to HTTP responses.
@@ -1543,13 +1579,36 @@ app.get("/api/stock-movements", ensureAuth, async (req, res) => {
 
 app.post("/api/stock-movements", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
+  const scope = getInvScope(req);
   const movement = await inventoryQueries.createStockMovement(
     { ...(req.body || {}), createdBy: req.user.id },
-    getInvScope(req)
+    scope
   );
   if (!movement) {
     return res.status(400).json({ error: "productId, type (in|out|adjustment) and positive quantity required" });
   }
+
+  // Look up the product's current stock + low-stock threshold so we can
+  // tell the client whether this movement pushed the item under the
+  // alert line. The client uses `crossedLowStock` to fire a toast.
+  const products = require("./db/queries/products");
+  const product = await products.findById(movement.productId);
+  let crossedLowStock = false;
+  if (product) {
+    const stock = Number(product.stock) || 0;
+    const lowStock = Number(product.lowStock) || 0;
+    crossedLowStock = lowStock > 0 && stock <= lowStock;
+  }
+
+  realtimeHub.publish(
+    realtimeHub.buildStockEvent({
+      action: "created",
+      movement,
+      product: product ? { id: product.id, name: product.name, stock: product.stock, lowStock: product.lowStock } : null,
+      crossedLowStock,
+      scope,
+    })
+  );
   res.json(movement);
 });
 

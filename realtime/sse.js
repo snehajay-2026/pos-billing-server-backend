@@ -13,12 +13,14 @@ const hub = require("./hub");
 // Default channel: ALL. Pass ?storeType=hotel&storeId=hotel to scope.
 const buildDefaultChannel = ({ storeType, storeId }) => {
   // Super Owner (no specific storeType in user record) or query override
-  // targeting a specific store → join the booking + hotel channels for
-  // that store plus the global channel.
+  // targeting a specific store → join every per-store channel for that
+  // store plus the global channel so cross-device sync stays in sync.
   if (storeType) {
     return [
       hub.CHANNELS.BOOKING(storeType, storeId),
       hub.CHANNELS.HOTEL(storeType, storeId),
+      hub.CHANNELS.INVOICE(storeType, storeId),
+      hub.CHANNELS.STOCK(storeType, storeId),
       hub.CHANNELS.ALL(),
     ];
   }

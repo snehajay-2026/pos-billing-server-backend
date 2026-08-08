@@ -21,6 +21,8 @@ const { randomUUID } = require("crypto");
 const CHANNELS = {
   BOOKING: (storeType, storeId) => `bookings:${storeType || ""}:${storeId || ""}`,
   HOTEL: (storeType, storeId) => `hotel:${storeType || ""}:${storeId || ""}`,
+  INVOICE: (storeType, storeId) => `invoices:${storeType || ""}:${storeId || ""}`,
+  STOCK: (storeType, storeId) => `stock:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -95,11 +97,37 @@ const buildHotelEvent = ({ action, kind, storeType, storeId, data }) => ({
   data,
 });
 
+// Build an event for an invoice checkout. Fans out on the invoices channel
+// so other cashiers / admins see live sales activity across devices.
+const buildInvoiceEvent = ({ action, invoice, scope }) => ({
+  kind: "invoice",
+  action, // 'created'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.INVOICE(scope?.storeType, scope?.storeId),
+  invoice,
+});
+
+// Build an event for a stock movement (in/out/adjustment). The client uses
+// `crossedLowStock` to decide whether to surface a low-stock toast.
+const buildStockEvent = ({ action, movement, product, crossedLowStock, scope }) => ({
+  kind: "stock",
+  action, // 'created'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.STOCK(scope?.storeType, scope?.storeId),
+  movement,
+  product,
+  crossedLowStock: !!crossedLowStock,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
   publish,
   buildBookingEvent,
   buildHotelEvent,
+  buildInvoiceEvent,
+  buildStockEvent,
   recentEvents,
 };
