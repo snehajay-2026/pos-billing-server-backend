@@ -176,6 +176,8 @@ CREATE TABLE IF NOT EXISTS `invoices` (
   `discount_breakdown` JSON NULL,
   `payment_mode` VARCHAR(32) NULL,
   `billed_by` VARCHAR(255) NULL,
+  `customer_name` VARCHAR(255) NULL,
+  `customer_mobile` VARCHAR(32) NULL,
   `_store_type` VARCHAR(64) NULL,
   `_store_id` VARCHAR(128) NULL,
   `_user_email` VARCHAR(255) NULL,

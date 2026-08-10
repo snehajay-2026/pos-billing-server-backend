@@ -16,7 +16,7 @@
 const { query, withTransaction } = require("../pool");
 
 const COLUMNS =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -38,11 +38,36 @@ const rowToInvoice = (row) => {
     discountBreakdown: row.discount_breakdown || null,
     paymentMode: row.payment_mode || null,
     billedBy: row.billed_by || null,
+    customerName: row.customer_name || null,
+    customerMobile: row.customer_mobile || null,
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
     createdAt: row.created_at || null,
     updatedAt: row.updated_at || null,
+  };
+};
+
+// Resolve the customer name / mobile to persist on the invoices row.
+// Clients send them at the top level (customerName) or nested under
+// hotelDetails.customerMobile (hotel dining); older booking line items also
+// carry them on each item's meta.guest / meta.customerMobile. First non-empty
+// value wins, so every store type populates the columns and re-printed saved
+// invoices can read the name back from the row instead of the JSON blob.
+const resolveCustomer = (invoice = {}) => {
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+  const first =
+    items.find((it) => it && it.meta && (it.meta.guest || it.meta.customerMobile)) ||
+    items[0] ||
+    null;
+  const clean = (v) => (v == null ? "" : String(v).trim());
+  return {
+    customerName: clean(invoice.customerName) || clean(first?.meta?.guest) || null,
+    customerMobile:
+      clean(invoice.customerMobile) ||
+      clean(invoice.hotelDetails?.customerMobile) ||
+      clean(first?.meta?.customerMobile) ||
+      null,
   };
 };
 
@@ -83,6 +108,7 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
 
   const id = Date.now();
   const updatedStock = [];
+  const { customerName, customerMobile } = resolveCustomer(invoice);
 
   return withTransaction(async (conn) => {
     // 1. Lock + validate every line item.
@@ -131,8 +157,9 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
       `INSERT INTO invoices
          (id, invoice_no, date, items, sub_total, gst_total, grand_total,
           discount, discount_breakdown, payment_mode, billed_by,
+          customer_name, customer_mobile,
           _store_type, _store_id, _user_email, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
       [
         id,
         invoice.invoiceNo,
@@ -145,6 +172,8 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
         invoice.discountBreakdown ? JSON.stringify(invoice.discountBreakdown) : null,
         invoice.paymentMode || invoice.payment_mode || null,
         invoice.billedBy || invoice.billed_by || null,
+        customerName,
+        customerMobile,
         scope.storeType || null,
         scope.storeId || null,
         scope.email || null,
@@ -179,12 +208,14 @@ const list = async (scope) => {
 // createWithStockDecrement above (used by /api/invoices/checkout).
 const create = async (item, scope) => {
   const id = Date.now();
+  const { customerName, customerMobile } = resolveCustomer(item);
   await query(
     `INSERT INTO invoices
        (id, invoice_no, date, items, sub_total, gst_total, grand_total,
         discount, discount_breakdown, payment_mode, billed_by,
+        customer_name, customer_mobile,
         _store_type, _store_id, _user_email, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
     [
       id,
       item.invoiceNo || item.invoice_no || null,
@@ -197,6 +228,8 @@ const create = async (item, scope) => {
       item.discountBreakdown ? JSON.stringify(item.discountBreakdown) : null,
       item.paymentMode || item.payment_mode || null,
       item.billedBy || item.billed_by || null,
+      customerName,
+      customerMobile,
       scope.storeType || null,
       scope.storeId || null,
       scope.email || null,
@@ -224,11 +257,13 @@ const update = async (id, patch) => {
   const allowed = [
     "invoice_no", "date", "items", "sub_total", "gst_total", "grand_total",
     "discount", "discount_breakdown", "payment_mode", "billed_by",
+    "customer_name", "customer_mobile",
   ];
   const camelToSnake = {
     invoiceNo: "invoice_no", subTotal: "sub_total", gstTotal: "gst_total",
     grandTotal: "grand_total", discountBreakdown: "discount_breakdown",
     paymentMode: "payment_mode", billedBy: "billed_by",
+    customerName: "customer_name", customerMobile: "customer_mobile",
   };
   const sets = [];
   const params = [];
