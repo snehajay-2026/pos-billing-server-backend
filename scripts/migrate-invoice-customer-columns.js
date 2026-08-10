@@ -17,7 +17,11 @@
 //   node scripts/migrate-invoice-customer-columns.js            # run it
 //   node scripts/migrate-invoice-customer-columns.js --dry-run  # preview only
 //
-// Reads DB_* from server/.env (same as db/pool.js).
+// Reads DB_* from server/.env (same as db/pool.js). The ALTER step needs
+// CREATE/ALTER privileges; if DB_ADMIN_USER / DB_ADMIN_PASSWORD are set, the
+// script connects as that admin for the DDL and as the app user for the
+// backfill. Without them it runs entirely as the app user and prints the
+// exact ALTER statements to run manually if DDL is denied.
 
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
@@ -75,6 +79,9 @@ const firstMobile = (items) => {
 
 (async () => {
   const c = await mysql.createConnection(config);
+  // Optional admin connection for the DDL step (ALTER) when the app user is
+  // DML-only. Falls back to `c` when not provided.
+  const ddl = adminConfig ? await mysql.createConnection(adminConfig) : c;
   try {
     // 1. Inspect current columns.
     const [cols] = await c.query(
@@ -103,7 +110,7 @@ const firstMobile = (items) => {
       console.log(`  ${DRY_RUN ? "[dry-run] " : ""}${sql}`);
       if (DRY_RUN) continue;
       try {
-        await c.query(sql);
+        await ddl.query(sql);
       } catch (err) {
         const denied =
           err.errno === 1142 ||
@@ -175,6 +182,7 @@ const firstMobile = (items) => {
     );
   } finally {
     await c.end();
+    if (ddl !== c) await ddl.end();
   }
 })().catch((e) => {
   console.error("Migration failed:", e.message);
