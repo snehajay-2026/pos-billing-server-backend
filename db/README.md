@@ -16,14 +16,25 @@ This folder holds the **MySQL data layer** for the backend server.
 ```
 schema/
 ├── 001_initial_ddl.sql       # Pure CREATE TABLE statements. Always safe to apply.
-└── 002_bootstrap_local.sql  # Localhost-only: CREATE DATABASE + CREATE USER + GRANT.
+├── 002_bootstrap_local.sql  # Localhost-only: CREATE DATABASE + CREATE USER + GRANT.
+├── 003_hotel_module_locks.sql
+├── 004_inventory.sql
+├── 005_laundry.sql
+├── 006_hotel_bookings.sql
+└── 007_invoice_customer_columns.sql   # invoices.customer_name / customer_mobile
 ```
 
 The split exists because **managed MySQL providers** (Railway, PlanetScale,
 Aiven, Render) create the database and user for you. So:
 
-- **Localhost**: apply both, in order.
-- **Managed MySQL**: apply only `001_initial_ddl.sql`.
+- **Localhost**: apply all, in order.
+- **Managed MySQL**: apply only `001_initial_ddl.sql` (fresh) — existing
+  deployments follow the migration notes in each numbered file.
+- **Existing deployments**: numbered files (e.g. `007_*`) are ALTERs for
+  upgrades. See `db/schema/007_invoice_customer_columns.sql` and
+  `scripts/migrate-invoice-customer-columns.js` for the `invoices`
+  customer-columns migration, which must run as a user with ALTER rights
+  (the app user `pos_billing_app` is DML-only).
 
 ## Applying the schema
 
