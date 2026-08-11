@@ -49,24 +49,39 @@ const rowToInvoice = (row) => {
 };
 
 // Resolve the customer name / mobile to persist on the invoices row.
-// Clients send them at the top level (customerName) or nested under
-// hotelDetails.customerMobile (hotel dining); older booking line items also
-// carry them on each item's meta.guest / meta.customerMobile. First non-empty
-// value wins, so every store type populates the columns and re-printed saved
-// invoices can read the name back from the row instead of the JSON blob.
+// Clients send them at the top level (customerName / customerPhone) or
+// nested under hotelDetails.guestName / hotelDetails.customerMobile (hotel
+// dining); older booking line items also carry them on each item's
+// meta.guest / meta.customerMobile. First non-empty value wins, so every
+// store type populates the columns and re-printed saved invoices can
+// read the name back from the row instead of the JSON blob.
+//
+// NOTE: the Retail POS Billing UI sends the phone as `customerPhone`,
+// not `customerMobile`. The previous implementation only checked
+// `invoice.customerMobile`, so retail invoices saved with a typed phone
+// number lost the field — the rendered invoice always showed an empty
+// Mobile line. We accept both spellings now (and prefer the existing
+// `customerMobile` first, so any legacy callers keep their shape).
 const resolveCustomer = (invoice = {}) => {
   const items = Array.isArray(invoice.items) ? invoice.items : [];
   const first =
-    items.find((it) => it && it.meta && (it.meta.guest || it.meta.customerMobile)) ||
+    items.find((it) => it && it.meta && (it.meta.guest || it.meta.customerMobile || it.meta.customerPhone)) ||
     items[0] ||
     null;
   const clean = (v) => (v == null ? "" : String(v).trim());
   return {
-    customerName: clean(invoice.customerName) || clean(first?.meta?.guest) || null,
+    customerName:
+      clean(invoice.customerName) ||
+      clean(invoice.hotelDetails?.guestName) ||
+      clean(first?.meta?.guest) ||
+      null,
     customerMobile:
       clean(invoice.customerMobile) ||
+      clean(invoice.customerPhone) ||
       clean(invoice.hotelDetails?.customerMobile) ||
+      clean(invoice.hotelDetails?.customerPhone) ||
       clean(first?.meta?.customerMobile) ||
+      clean(first?.meta?.customerPhone) ||
       null,
   };
 };
