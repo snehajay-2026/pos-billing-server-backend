@@ -971,6 +971,13 @@ app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
     return res.status(404).json({ error: "Not found" });
   }
   const invoice = sanitizePublicInvoice(row);
+  // The row's `invoice_no` column may be NULL for legacy / partial rows
+  // even though the URL clearly identifies the invoice. Fill `invoiceNo`
+  // from the URL param so the public receipt renders the number the
+  // customer actually sees in the browser address bar.
+  if (!invoice.invoiceNo && req.params.invoiceNo) {
+    invoice.invoiceNo = String(req.params.invoiceNo);
+  }
   const store = await getPublicStoreChrome(row);
   res.json({ invoice, store });
 });
