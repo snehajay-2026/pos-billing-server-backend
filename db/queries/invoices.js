@@ -315,4 +315,5 @@ module.exports = {
   findByIdScoped,
   update,
   deleteById,
+  rowToInvoice,
 };

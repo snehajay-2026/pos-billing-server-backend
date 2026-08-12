@@ -29,6 +29,7 @@ const reportsQueries = require("./db/queries/reports");
 const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
+const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -957,6 +958,21 @@ app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
     })
   );
   res.json({ ok: removed });
+});
+
+// PUBLIC — no ensureAuth. Used by the WhatsApp/Email share link so
+// customers can open their invoice without logging in. Returns a
+// sanitized invoice (no internal `_store*` / `_user_email`, no cashier
+// email, no `items[].meta`) plus the store chrome the thermal
+// renderers need to display the real store name/address/GSTIN/logo.
+app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
+  const row = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
+  if (!row) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const invoice = sanitizePublicInvoice(row);
+  const store = await getPublicStoreChrome(row);
+  res.json({ invoice, store });
 });
 
 app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
