@@ -74,6 +74,21 @@ const findById = async (id) => {
   return rowToUser(rows[0][0]);
 };
 
+// Public-safe lookup by email: returns the same row as findById but
+// excludes the bcrypt password hash. Used by the unauthenticated public
+// invoice endpoint to resolve the cashier's `_user_email` to a
+// displayable name for the "Billed By" line.
+const findByEmail = async (email) => {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const rows = await query(
+    "SELECT id, email, role, store_type, store_id, owner_email, root_owner_email, approved, status, name, phone, address, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
+    [normalized]
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToUser(rows[0][0]);
+};
+
 const count = async () => {
   const rows = await query("SELECT COUNT(*) AS c FROM users");
   return rows[0][0].c;
@@ -209,6 +224,7 @@ const deleteById = async (id) => {
 module.exports = {
   findByEmailWithPassword,
   findById,
+  findByEmail,
   count,
   existsByEmail,
   create,
