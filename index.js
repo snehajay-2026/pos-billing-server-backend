@@ -979,27 +979,7 @@ app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
     invoice.invoiceNo = String(req.params.invoiceNo);
   }
   const store = await getPublicStoreChrome(row);
-  // TEMP DEBUG: echo the raw DB-row values for the fields that are
-  // showing as null on the public page so we can confirm whether the
-  // columns are populated or whether sanitizePublicInvoice is dropping
-  // them. Remove once the discrepancy is resolved.
-  const payload = { invoice, store };
-  payload.__dbg = {
-    customerNameCol: row.customerName ?? null,
-    customerMobileCol: row.customerMobile ?? null,
-    billedByCol: row.billedBy ?? null,
-    paymentModeCol: row.paymentMode ?? null,
-    subTotalCol: row.subTotal ?? null,
-    gstTotalCol: row.gstTotal ?? null,
-    grandTotalCol: row.grandTotal ?? null,
-    storeType: row._storeType ?? null,
-    storeId: row._storeId ?? null,
-    userEmail: row._userEmail ?? null,
-    hasItems: Array.isArray(row.items) ? row.items.length : 0,
-    firstItemKeys: Array.isArray(row.items) && row.items[0] ? Object.keys(row.items[0]) : [],
-    firstItemMeta: Array.isArray(row.items) && row.items[0] && row.items[0].meta ? row.items[0].meta : null,
-  };
-  res.json(payload);
+  res.json({ invoice, store });
 });
 
 app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
