@@ -216,24 +216,30 @@ const getStoreSettingsScopeKey = (req) => {
   return `store-settings:${keyType}:${keyId}`;
 };
 
+// Cookie attributes for the session + XSRF cookies. The frontend Vercel
+// proxy (`vercel.json` rewrites `/api/*` to this Render origin) makes
+// `/api/*` same-origin from the browser's perspective, so we can use
+// `SameSite=Lax` and skip the `Secure` flag in dev. In production the
+// Vercel proxy is HTTPS, so `Secure` is still set — the cookie is
+// host-only (no Domain attribute) and scoped to the frontend origin.
 const getCookieOptions = () => ({
   httpOnly: true,
-  sameSite: "none",
-  // SameSite=None cookies must also be Secure in modern browsers.
-  // Localhost is treated as a secure context in most browsers, so this works for local dev.
-  secure: true,
-  // 30 days — long enough that Safari's ITP doesn't drop the cookie
-  // during typical idle sessions (which has a hard 7-day cap for
-  // cross-site cookies without explicit user interaction). The server
-  // is the source of truth for session expiry (sessions table); this
-  // is just the browser-side retention.
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
   maxAge: 1000 * 60 * 60 * 24 * 30,
   path: "/",
-  sameParty: false,
-  // Priority=High hint asks the browser to retain the cookie in memory
-  // rather than evict it under storage pressure. Chrome supports this
-  // natively; Safari ignores unknown priority attributes (harmless).
-  priority: "high",
+});
+
+// XSRF cookie — same lifetime/flags as the session cookie, but JS-readable
+// (not HttpOnly) so the frontend can echo it as the X-CSRF-Token header.
+// Same-origin via the Vercel proxy means `document.cookie` can read this
+// directly on the frontend domain.
+const getXsrfCookieOptions = () => ({
+  httpOnly: false,
+  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production",
+  maxAge: 1000 * 60 * 60 * 24 * 30,
+  path: "/",
 });
 
 app.use(
@@ -357,15 +363,11 @@ app.post("/api/login", loginLimiter, async (req, res) => {
   res.cookie("sessionId", sessionId, getCookieOptions());
   // XSRF token cookie: same lifetime/flags as the session cookie but JS-
   // readable (not HttpOnly). The frontend echoes it as the X-CSRF-Token
-  // header on every non-GET request. Cross-site attackers can't read it.
+  // header on every non-GET request. Same-origin via Vercel proxy means
+  // document.cookie can read it on the frontend domain; cross-site
+  // attackers can't.
   const csrfToken = crypto.randomBytes(24).toString("hex");
-  res.cookie("XSRF-TOKEN", csrfToken, {
-    httpOnly: false,
-    sameSite: "none",
-    secure: true,
-    maxAge: 1000 * 60 * 60 * 24 * 30,
-    path: "/",
-  });
+  res.cookie("XSRF-TOKEN", csrfToken, getXsrfCookieOptions());
   res.json({ ...sanitizeUser(user), csrfToken });
 });
 
@@ -393,13 +395,7 @@ app.get("/api/auth/user", ensureAuth, async (req, res) => {
   // /api/login flow) still have a valid token to echo back. The cookie
   // is also refreshed so subsequent POSTs see a matching pair.
   const csrfToken = crypto.randomBytes(24).toString("hex");
-  res.cookie("XSRF-TOKEN", csrfToken, {
-    httpOnly: false,
-    sameSite: "none",
-    secure: true,
-    maxAge: 1000 * 60 * 60 * 24 * 30,
-    path: "/",
-  });
+  res.cookie("XSRF-TOKEN", csrfToken, getXsrfCookieOptions());
   res.json({ ...sanitizeUser(req.user), csrfToken });
 });
 
