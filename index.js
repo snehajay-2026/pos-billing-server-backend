@@ -986,6 +986,33 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
   res.json(invoice);
 });
 
+// PUT /api/invoices/:invoiceNo — status / metadata updates addressed by the
+// human-readable invoice number (e.g. "SI2026-837743"). The frontend's
+// invoiceService.updateInvoice routes all status flips (Clear / Cancel /
+// Partial / Paid) through this URL, so the generic PUT /api/:resource/:id
+// handler would receive the invoice_no string and look it up against the
+// integer primary key "id" — always returning 404. This dedicated route
+// pairs the GET handler above: same lookup by invoice_no, same scope
+// enforcement, then delegates to update() with the resolved integer id.
+app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
+  const existing = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
+  if (!existing) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const scope = getRequestScope(req);
+  // Enforce the same store-scoped gate the generic PUT does for non-super
+  // owners. Reusing findByIdScoped with the row's id + the request scope
+  // makes this drop table rows that don't belong to the caller.
+  if (typeof invoicesQueries.findByIdScoped === "function") {
+    const allowed = await invoicesQueries.findByIdScoped(existing.id, scope);
+    if (!allowed) {
+      return res.status(404).json({ error: "Not found" });
+    }
+  }
+  const updated = await invoicesQueries.update(existing.id, req.body || {});
+  return res.json(updated);
+});
+
 // POST /api/invoices
 // Plain invoice persistence — used by verticals that do NOT track stock
 // decrements atomically (service, laundry, hotel). The retail POSBilling
