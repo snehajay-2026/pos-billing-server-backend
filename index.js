@@ -986,6 +986,54 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
   res.json(invoice);
 });
 
+// POST /api/invoices
+// Plain invoice persistence — used by verticals that do NOT track stock
+// decrements atomically (service, laundry, hotel). The retail POSBilling
+// flow uses /api/invoices/checkout instead, which combines save + stock
+// decrement in a single transaction. Both shapes return the saved invoice.
+//
+// Validation is intentionally minimal: the frontend assembles the invoice
+// payload and the cashier is the source of truth for billing metadata.
+// We only require an invoiceNo + at least one line item; downstream
+// queries (invoice list, public share link) assume these fields.
+app.post("/api/invoices", ensureAuth, async (req, res) => {
+  const invoice = req.body || {};
+  const items = Array.isArray(invoice.items) ? invoice.items : [];
+
+  if (!invoice.invoiceNo) {
+    return res.status(400).json({ error: "invoiceNo is required" });
+  }
+  if (items.length === 0) {
+    return res.status(400).json({ error: "Invoice has no line items" });
+  }
+
+  const scope = getRequestScope(req);
+  try {
+    const saved = await invoicesQueries.create(invoice, scope);
+    if (!saved) {
+      return res.status(500).json({ error: "Failed to persist invoice" });
+    }
+    // Broadcast the new invoice so other cashiers / admins in the same
+    // store see live sales activity without polling. Stock events are not
+    // emitted here — this path doesn't touch inventory.
+    realtimeHub.publish(
+      realtimeHub.buildInvoiceEvent({
+        action: "created",
+        invoice: saved,
+        scope,
+      })
+    );
+    return res.status(201).json(saved);
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message,
+      ...(err.productId ? { productId: err.productId } : {}),
+      ...(err.productName ? { productName: err.productName } : {}),
+    });
+  }
+});
+
 // POST /api/invoices/checkout
 // Atomically validates and decrements stock for every line item in the
 // invoice, then persists the invoice. This replaces the client-side approach
