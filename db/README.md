@@ -21,7 +21,8 @@ schema/
 ├── 004_inventory.sql
 ├── 005_laundry.sql
 ├── 006_hotel_bookings.sql
-└── 007_invoice_customer_columns.sql   # invoices.customer_name / customer_mobile
+├── 007_invoice_customer_columns.sql   # invoices.customer_name / customer_mobile
+└── 008_invoice_status.sql   # invoices.status (for Clear/Cancel persistence)
 ```
 
 The split exists because **managed MySQL providers** (Railway, PlanetScale,

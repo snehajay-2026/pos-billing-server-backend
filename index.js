@@ -29,6 +29,7 @@ const reportsQueries = require("./db/queries/reports");
 const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
+const { runRuntimeMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 
 // Map of MySQL-backed resources to their query modules. The handlers
@@ -1812,6 +1813,21 @@ process.on("uncaughtException", (err) => {
 });
 
 const startServer = async () => {
+  // Self-applying, idempotent column-level migrations. Keeps deploys
+  // self-healing for additive changes the app code expects to read/write
+  // (e.g. invoices.status — without it, the Clear/Cancel PUT silently
+  // drops the value and the row returns without a status).
+  try {
+    const result = await runRuntimeMigrations();
+    if (result.applied || result.denied) {
+      console.log(
+        `[startup] runtime-migrations: applied=${result.applied} skipped=${result.skipped} denied=${result.denied}`
+      );
+    }
+  } catch (err) {
+    console.warn("[startup] runtime-migrations threw:", err.message);
+  }
+
   // Sessions live in MySQL (sessions table) — no in-memory load needed.
   // Hotel state lives in MySQL (hotel_state singleton) — no in-memory
   // load needed. The MySQL-backed routes read fresh on every request.

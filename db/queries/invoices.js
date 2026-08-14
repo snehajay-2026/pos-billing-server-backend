@@ -16,7 +16,7 @@
 const { query, withTransaction } = require("../pool");
 
 const COLUMNS =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -38,6 +38,7 @@ const rowToInvoice = (row) => {
     discountBreakdown: row.discount_breakdown || null,
     paymentMode: row.payment_mode || null,
     billedBy: row.billed_by || null,
+    status: row.status || null,
     customerName: row.customer_name || null,
     customerMobile: row.customer_mobile || null,
     _storeType: row._store_type || null,
@@ -271,7 +272,7 @@ const findByIdScoped = async (id, scope) => {
 const update = async (id, patch) => {
   const allowed = [
     "invoice_no", "date", "items", "sub_total", "gst_total", "grand_total",
-    "discount", "discount_breakdown", "payment_mode", "billed_by",
+    "discount", "discount_breakdown", "payment_mode", "billed_by", "status",
     "customer_name", "customer_mobile",
   ];
   const camelToSnake = {
