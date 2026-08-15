@@ -53,7 +53,9 @@ const rowToInvoice = (row) => {
 // Clients send them at the top level (customerName / customerPhone) or
 // nested under hotelDetails.guestName / hotelDetails.customerMobile (hotel
 // dining); older booking line items also carry them on each item's
-// meta.guest / meta.customerMobile. First non-empty value wins, so every
+// meta.guest / meta.customerMobile. The Laundry Store sends them as
+// `customer` / `phone` (the field names the Laundry Billing UI uses for
+// its own customer-input row). First non-empty value wins, so every
 // store type populates the columns and re-printed saved invoices can
 // read the name back from the row instead of the JSON blob.
 //
@@ -73,12 +75,24 @@ const resolveCustomer = (invoice = {}) => {
   return {
     customerName:
       clean(invoice.customerName) ||
+      // Laundry Store sends its customer input as the top-level `customer`
+      // field (the field name LaundryBilling.jsx uses in its bill-meta
+      // row). Without this, Laundry invoices saved with a typed name
+      // landed in the DB with customer_name=NULL and the cashier's name
+      // never appeared on either the Invoice Preview or the Public
+      // Invoice share link.
+      clean(invoice.customer) ||
       clean(invoice.hotelDetails?.guestName) ||
       clean(first?.meta?.guest) ||
+      clean(first?.meta?.customerName) ||
       null,
     customerMobile:
       clean(invoice.customerMobile) ||
       clean(invoice.customerPhone) ||
+      // Laundry Store sends its phone input as the top-level `phone` field
+      // (paired with `customer` above). Symmetric to the customerName
+      // fallback so the column mirrors what the cashier typed.
+      clean(invoice.phone) ||
       clean(invoice.hotelDetails?.customerMobile) ||
       clean(invoice.hotelDetails?.customerPhone) ||
       clean(first?.meta?.customerMobile) ||
