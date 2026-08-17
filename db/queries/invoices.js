@@ -15,8 +15,49 @@
 
 const { query, withTransaction } = require("../pool");
 
-const COLUMNS =
+// `invoices.generated_at` is added in migration `009_invoice_generated_at.sql`
+// to persist the cashier-perceived moment of clicking Generate Invoice. We
+// can't assume the column exists when this module first boots — a freshly
+// deployed build running against a pre-migration DB would crash every
+// INSERT with `Unknown column 'generated_at' in 'field list'`. Probe the
+// schema once at module load and flip this flag so the INSERT/SELECT
+// builders below can branch without paying the probe cost on every save.
+//
+// We swallow the error: a missing column is the expected pre-migration
+// state, and any *other* schema error will surface on the very next query.
+let hasGeneratedAtColumn = false;
+(async () => {
+  try {
+    const [rows] = await query(
+      `SELECT COUNT(*) AS n
+         FROM information_schema.columns
+         WHERE table_schema = DATABASE()
+           AND table_name = 'invoices'
+           AND column_name = 'generated_at'`
+    );
+    hasGeneratedAtColumn = Number((rows && rows[0] && rows[0].n) || 0) > 0;
+  } catch (e) {
+    hasGeneratedAtColumn = false;
+  }
+})();
+
+// Single source of truth for the SELECT column list. Includes the
+// optional `generated_at` column when the migration has been applied;
+// falls back to the pre-migration column set otherwise so a backend
+// running against an un-migrated DB doesn't 500 every invoice fetch.
+// Implemented as a getter so the value reflects the post-probe flag
+// (the probe is async and resolves after this module finishes
+// evaluating — so a `const` snapshot taken at module-load time would
+// permanently pin `hasGeneratedAtColumn = false`).
+const COLUMNS_NO_GEN =
+  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
+const COLUMNS_WITH_GEN =
   "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, generated_at, updated_at";
+const COLUMNS = {
+  get withGen() {
+    return hasGeneratedAtColumn ? COLUMNS_WITH_GEN : COLUMNS_NO_GEN;
+  },
+};
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -123,7 +164,7 @@ const resolveCustomer = (invoice = {}) => {
 
 const findByInvoiceNo = async (invoiceNo) => {
   const rows = await query(
-    `SELECT ${COLUMNS} FROM invoices WHERE invoice_no = ? LIMIT 1`,
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE invoice_no = ? LIMIT 1`,
     [String(invoiceNo)]
   );
   if (!rows[0] || rows[0].length === 0) return null;
@@ -212,32 +253,42 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
     //    insert while still preferring the live cashier moment when
     //    present.
     const generatedAtSql = invoice.generatedAt ? toMysqlDatetime(invoice.generatedAt) : null;
+    // Build the INSERT shape dynamically so the `generated_at` column
+    // is only referenced when the migration has run. The probe at
+    // module-load sets `hasGeneratedAtColumn`; by the time the first
+    // invoice save request lands, the flag has settled, so this branch
+    // picks the right shape for every save after that.
+    const insertBaseCols =
+      "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
+    const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
+    const insertCols = hasGeneratedAtColumn
+      ? `${insertBaseCols}, generated_at, updated_at`
+      : `${insertBaseCols}, updated_at`;
+    const insertVals = hasGeneratedAtColumn
+      ? `${insertBaseVals}, COALESCE(?, NOW(3)), NOW(3)`
+      : `${insertBaseVals}, NOW(3)`;
+    const insertParams = [
+      id,
+      invoice.invoiceNo,
+      invoice.date || null,
+      JSON.stringify(items),
+      toNumber(invoice.subTotal ?? invoice.sub_total) ?? 0,
+      toNumber(invoice.gstTotal ?? invoice.gst_total) ?? 0,
+      toNumber(invoice.grandTotal ?? invoice.grand_total) ?? 0,
+      invoice.discount ? JSON.stringify(invoice.discount) : null,
+      invoice.discountBreakdown ? JSON.stringify(invoice.discountBreakdown) : null,
+      invoice.paymentMode || invoice.payment_mode || null,
+      invoice.billedBy || invoice.billed_by || null,
+      customerName,
+      customerMobile,
+      scope.storeType || null,
+      scope.storeId || null,
+      scope.email || null,
+    ];
+    if (hasGeneratedAtColumn) insertParams.push(generatedAtSql);
     await conn.query(
-      `INSERT INTO invoices
-         (id, invoice_no, date, items, sub_total, gst_total, grand_total,
-          discount, discount_breakdown, payment_mode, billed_by,
-          customer_name, customer_mobile,
-          _store_type, _store_id, _user_email, created_at, generated_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), COALESCE(?, NOW(3)), NOW(3))`,
-      [
-        id,
-        invoice.invoiceNo,
-        invoice.date || null,
-        JSON.stringify(items),
-        toNumber(invoice.subTotal ?? invoice.sub_total) ?? 0,
-        toNumber(invoice.gstTotal ?? invoice.gst_total) ?? 0,
-        toNumber(invoice.grandTotal ?? invoice.grand_total) ?? 0,
-        invoice.discount ? JSON.stringify(invoice.discount) : null,
-        invoice.discountBreakdown ? JSON.stringify(invoice.discount_breakdown) : null,
-        invoice.paymentMode || invoice.payment_mode || null,
-        invoice.billedBy || invoice.billed_by || null,
-        customerName,
-        customerMobile,
-        scope.storeType || null,
-        scope.storeId || null,
-        scope.email || null,
-        generatedAtSql,
-      ]
+      `INSERT INTO invoices (${insertCols}) VALUES (${insertVals})`,
+      insertParams
     );
 
     return { id, updatedStock };
@@ -257,7 +308,7 @@ const list = async (scope) => {
   if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
   const rows = await query(
-    `SELECT ${COLUMNS} FROM invoices ${where} ORDER BY created_at DESC, id DESC`,
+    `SELECT ${COLUMNS.withGen} FROM invoices ${where} ORDER BY created_at DESC, id DESC`,
     params
   );
   return rows[0].map(rowToInvoice);
@@ -270,32 +321,40 @@ const create = async (item, scope) => {
   const id = Date.now();
   const { customerName, customerMobile } = resolveCustomer(item);
   const generatedAtSql = item.generatedAt ? toMysqlDatetime(item.generatedAt) : null;
+  // Same dynamic INSERT shape as `createWithStockDecrement` — the
+  // `generated_at` column is only referenced when the
+  // `009_invoice_generated_at.sql` migration has run.
+  const insertBaseCols =
+    "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
+  const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
+  const insertCols = hasGeneratedAtColumn
+    ? `${insertBaseCols}, generated_at, updated_at`
+    : `${insertBaseCols}, updated_at`;
+  const insertVals = hasGeneratedAtColumn
+    ? `${insertBaseVals}, COALESCE(?, NOW(3)), NOW(3)`
+    : `${insertBaseVals}, NOW(3)`;
+  const insertParams = [
+    id,
+    item.invoiceNo || item.invoice_no || null,
+    item.date || null,
+    item.items ? JSON.stringify(item.items) : null,
+    toNumber(item.subTotal ?? item.sub_total) ?? 0,
+    toNumber(item.gstTotal ?? item.gst_total) ?? 0,
+    toNumber(item.grandTotal ?? item.grand_total) ?? 0,
+    item.discount ? JSON.stringify(item.discount) : null,
+    item.discountBreakdown ? JSON.stringify(item.discountBreakdown) : null,
+    item.paymentMode || item.payment_mode || null,
+    item.billedBy || item.billed_by || null,
+    customerName,
+    customerMobile,
+    scope.storeType || null,
+    scope.storeId || null,
+    scope.email || null,
+  ];
+  if (hasGeneratedAtColumn) insertParams.push(generatedAtSql);
   await query(
-    `INSERT INTO invoices
-       (id, invoice_no, date, items, sub_total, gst_total, grand_total,
-        discount, discount_breakdown, payment_mode, billed_by,
-        customer_name, customer_mobile,
-        _store_type, _store_id, _user_email, created_at, generated_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), COALESCE(?, NOW(3)), NOW(3))`,
-    [
-      id,
-      item.invoiceNo || item.invoice_no || null,
-      item.date || null,
-      item.items ? JSON.stringify(item.items) : null,
-      toNumber(item.subTotal ?? item.sub_total) ?? 0,
-      toNumber(item.gstTotal ?? item.gst_total) ?? 0,
-      toNumber(item.grandTotal ?? item.grand_total) ?? 0,
-      item.discount ? JSON.stringify(item.discount) : null,
-      item.discountBreakdown ? JSON.stringify(item.discountBreakdown) : null,
-      item.paymentMode || item.payment_mode || null,
-      item.billedBy || item.billed_by || null,
-      customerName,
-      customerMobile,
-      scope.storeType || null,
-      scope.storeId || null,
-      scope.email || null,
-      generatedAtSql,
-    ]
+    `INSERT INTO invoices (${insertCols}) VALUES (${insertVals})`,
+    insertParams
   );
   return findByInvoiceNo(item.invoiceNo || item.invoice_no);
 };
@@ -308,7 +367,7 @@ const findByIdScoped = async (id, scope) => {
   if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
   const where = conds.length ? "AND " + conds.join(" AND ") : "";
   const rows = await query(
-    `SELECT ${COLUMNS} FROM invoices WHERE id = ? ${where} LIMIT 1`,
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE id = ? ${where} LIMIT 1`,
     params
   );
   if (!rows[0] || rows[0].length === 0) return null;
