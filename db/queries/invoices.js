@@ -16,12 +16,31 @@
 const { query, withTransaction } = require("../pool");
 
 const COLUMNS =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, generated_at, updated_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+};
+
+// Convert an ISO-ish datetime string from the cashier's frontend
+// (e.g. "2026-08-17T15:27:45.123Z") to MySQL DATETIME(3) format
+// ("2026-08-17 15:27:45.123"). Falls back to NOW(3) via the SQL COALESCE
+// when the input is missing or unparseable. The cashier's local-clock
+// ISO string is preserved as-is — we do NOT shift timezones here,
+// because the renderer's `timeZone: "Asia/Kolkata"` formatter is the
+// single source of truth for IST display.
+const toMysqlDatetime = (v) => {
+  if (v == null || v === "") return null;
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+    `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.` +
+    `${pad(d.getUTCMilliseconds(), 3)}`
+  );
 };
 
 const rowToInvoice = (row) => {
@@ -45,6 +64,7 @@ const rowToInvoice = (row) => {
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
     createdAt: row.created_at || null,
+    generatedAt: row.generated_at || null,
     updatedAt: row.updated_at || null,
   };
 };
@@ -183,13 +203,22 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
     }
 
     // 2. Insert the invoice. MySQL JSON columns accept objects directly.
+    //    `generated_at` is the cashier-perceived moment of clicking
+    //    Generate Invoice (sent by the cashier's frontend as
+    //    `invoice.generatedAt`, an ISO timestamp taken from a live
+    //    `new Date()` at click time). When the cashier didn't send
+    //    `generatedAt` — older POS flows, or non-frontend callers — we
+    //    fall back to NOW(3) so the column is never NULL on a fresh
+    //    insert while still preferring the live cashier moment when
+    //    present.
+    const generatedAtSql = invoice.generatedAt ? toMysqlDatetime(invoice.generatedAt) : null;
     await conn.query(
       `INSERT INTO invoices
          (id, invoice_no, date, items, sub_total, gst_total, grand_total,
           discount, discount_breakdown, payment_mode, billed_by,
           customer_name, customer_mobile,
-          _store_type, _store_id, _user_email, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+          _store_type, _store_id, _user_email, created_at, generated_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), COALESCE(?, NOW(3)), NOW(3))`,
       [
         id,
         invoice.invoiceNo,
@@ -199,7 +228,7 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
         toNumber(invoice.gstTotal ?? invoice.gst_total) ?? 0,
         toNumber(invoice.grandTotal ?? invoice.grand_total) ?? 0,
         invoice.discount ? JSON.stringify(invoice.discount) : null,
-        invoice.discountBreakdown ? JSON.stringify(invoice.discountBreakdown) : null,
+        invoice.discountBreakdown ? JSON.stringify(invoice.discount_breakdown) : null,
         invoice.paymentMode || invoice.payment_mode || null,
         invoice.billedBy || invoice.billed_by || null,
         customerName,
@@ -207,6 +236,7 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
         scope.storeType || null,
         scope.storeId || null,
         scope.email || null,
+        generatedAtSql,
       ]
     );
 
@@ -239,13 +269,14 @@ const list = async (scope) => {
 const create = async (item, scope) => {
   const id = Date.now();
   const { customerName, customerMobile } = resolveCustomer(item);
+  const generatedAtSql = item.generatedAt ? toMysqlDatetime(item.generatedAt) : null;
   await query(
     `INSERT INTO invoices
        (id, invoice_no, date, items, sub_total, gst_total, grand_total,
         discount, discount_breakdown, payment_mode, billed_by,
         customer_name, customer_mobile,
-        _store_type, _store_id, _user_email, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+        _store_type, _store_id, _user_email, created_at, generated_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), COALESCE(?, NOW(3)), NOW(3))`,
     [
       id,
       item.invoiceNo || item.invoice_no || null,
@@ -263,6 +294,7 @@ const create = async (item, scope) => {
       scope.storeType || null,
       scope.storeId || null,
       scope.email || null,
+      generatedAtSql,
     ]
   );
   return findByInvoiceNo(item.invoiceNo || item.invoice_no);
