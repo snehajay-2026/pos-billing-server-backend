@@ -944,6 +944,17 @@ app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
 
 app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   const { tableId } = req.params;
+  // Capture the bill before deletion so other connected devices can
+  // promote the finalized menu items into their own Live Bill cart
+  // (mirrors the local promotion in handleDiningTableClear on the
+  // clearing device). Previously this route only shipped `tableId`,
+  // so a remote Cashier clearing a table flipped their own UI but
+  // never made the items appear on every other connected Cashier's
+  // Live Bill.
+  const bills = await hotelQueries.getSlice("dining-bills");
+  const billBeforeClear = Array.isArray(bills)
+    ? (bills || []).find((item) => String(item?.id) === String(tableId)) || null
+    : null;
   const removed = await hotelQueries.removeItem("dining-bills", tableId);
   realtimeHub.publish(
     realtimeHub.buildHotelEvent({
@@ -951,10 +962,10 @@ app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
       kind: "live_bill",
       storeType: req.query.storeType,
       storeId: req.query.storeId,
-      data: { tableId },
+      data: { tableId, bill: billBeforeClear },
     })
   );
-  res.json({ ok: removed });
+  res.json({ ok: removed, bill: billBeforeClear });
 });
 
 // PUBLIC — no ensureAuth. Used by the WhatsApp/Email share link so
