@@ -29,6 +29,7 @@ const reportsQueries = require("./db/queries/reports");
 const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
+const couponsQueries = require("./db/queries/coupons");
 const { runRuntimeMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 
@@ -866,6 +867,134 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
 
 app.get("/api/events", ensureAuth, sseHandler);
 
+// === Hotel Coupons (Discount) =================================================
+// Four endpoints backing the Hotel Store discount feature:
+//   - GET  /api/hotel/coupons/:code  — cashier-facing validation
+//   - GET  /api/hotel/coupons        — Settings UI list (owner only)
+//   - POST /api/hotel/coupons        — Settings UI create (owner only)
+//   - PATCH /api/hotel/coupons/:id   — Settings UI update (owner only)
+//
+// The GET-by-code endpoint is intentionally NOT `ensureAuth`'d — the
+// cashier's HotelBilling.jsx validates the code as they type it, and
+// adding a login requirement here would force a credentials round-trip
+// on every keystroke. The endpoint is scope-filtered (storeType +
+// storeId) so a coupon scoped to one store cannot be redeemed by a
+// different store's cashier. Server-authoritative validation runs at
+// `POST /api/invoices` (via `validateHotelDiscount`) — this endpoint
+// is purely UX, not security.
+
+// Cashier-facing coupon lookup. Returns `{ valid: false }` for any
+// unresolvable code; the cashier's UI surfaces this as a validation
+// error.
+app.get("/api/hotel/coupons/:code", async (req, res) => {
+  const { code } = req.params;
+  const { storeType, storeId } = req.query;
+  if (!storeType || !storeId) {
+    return res.status(400).json({ error: "storeType and storeId are required" });
+  }
+  try {
+    const row = await couponsQueries.findActiveByCode(code, {
+      storeType,
+      storeId,
+      // The userEmail is unknown without auth here — pass null so the
+      // wildcard branch of the scope filter can match. This is the
+      // same effect a cashier's authed request would have for coupons
+      // scoped to either their email or to "anyone in this store".
+      userEmail: null,
+    });
+    if (!row) {
+      return res.status(404).json({ valid: false, message: "Invalid coupon code" });
+    }
+    res.json({
+      valid: true,
+      code: row.code,
+      type: row.type,
+      value: Number(row.value),
+      label: row.code,
+      minSubtotal: row.min_subtotal != null ? Number(row.min_subtotal) : 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings UI list. Owner-only — the Settings UI doesn't render this
+// panel for cashier role anyway, but the server is the source of
+// truth and 403s any non-owner request.
+app.get("/api/hotel/coupons", ensureAuth, async (req, res) => {
+  if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
+    return res.status(403).json({ error: "owner only" });
+  }
+  try {
+    const rows = await couponsQueries.listScoped({
+      storeType: req.query.storeType,
+      storeId: req.query.storeId,
+      userEmail: req.user.email,
+    });
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings UI create.
+app.post("/api/hotel/coupons", ensureAuth, async (req, res) => {
+  if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
+    return res.status(403).json({ error: "owner only" });
+  }
+  try {
+    const body = req.body || {};
+    const code = String(body.code || "").trim();
+    if (!code) return res.status(400).json({ error: "code is required" });
+    const value = Number(body.value);
+    if (!Number.isFinite(value) || value < 0) {
+      return res.status(400).json({ error: "value must be a non-negative number" });
+    }
+    if (value > 100) {
+      return res.status(400).json({ error: "value cannot exceed 100" });
+    }
+    const created = await couponsQueries.create({
+      code,
+      value,
+      minSubtotal: body.minSubtotal,
+      validFrom: body.validFrom,
+      validUntil: body.validUntil,
+      active: body.active === false ? false : true,
+      _storeType: req.query.storeType || null,
+      _storeId: req.query.storeId || null,
+      _userEmail: req.user.email,
+    });
+    res.status(201).json(created);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Settings UI update — soft-delete via `active = 0` is the standard
+// way to retire a coupon (preserves audit history).
+app.put("/api/hotel/coupons/:id", ensureAuth, async (req, res) => {
+  if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
+    return res.status(403).json({ error: "owner only" });
+  }
+  try {
+    const updated = await couponsQueries.update(
+      req.params.id,
+      req.body || {},
+      {
+        storeType: req.query.storeType || null,
+        storeId: req.query.storeId || null,
+        userEmail: req.user.email,
+      }
+    );
+    if (!updated) {
+      return res.status(404).json({ error: "Coupon not found" });
+    }
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Friendly alias for the SSE endpoint so we can disambiguate it from
 // other /api/* in production logs and reverse proxies.
 app.get("/api/sse", ensureAuth, sseHandler);
@@ -1047,6 +1176,17 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
   }
 
   const scope = getRequestScope(req);
+  // Hotel Store discount validation — mirrors `validateDiscount` on the
+  // checkout route but additionally enforces `source` (manual | coupon)
+  // and re-resolves coupons from the DB so client-claimed values
+  // cannot be spoofed. Runs before any write — failing here is cheap.
+  try {
+    await validateHotelDiscount(invoice.discount, items, scope);
+  } catch (err) {
+    const status = err.status || 400;
+    return res.status(status).json({ error: err.message });
+  }
+
   try {
     const saved = await invoicesQueries.create(invoice, scope);
     if (!saved) {
@@ -1113,6 +1253,78 @@ const validateDiscount = (discount, label) => {
     return `${label}: type must be "percent" or "flat"`;
   }
   return null;
+};
+
+// Hotel Store discount validation. Mirrors `validateDiscount` above
+// but additionally enforces `source` (manual | coupon) and — for
+// coupons — re-resolves the row from `hotel_coupons` so the client
+// cannot spoof the percent. The DB-resolved value/type/code are
+// written back onto the discount object before insert, so the saved
+// row carries what the server decided, not what the cashier typed.
+//
+// `scope = { storeType, storeId, userEmail }` is the request scope
+// passed to the coupon lookup so a coupon row scoped to a different
+// store / owner doesn't validate.
+const validateHotelDiscount = async (discount, items, scope) => {
+  if (discount == null) return null; // discount is optional
+  if (typeof discount !== "object") {
+    const err = new Error("discount must be an object");
+    err.status = 400;
+    throw err;
+  }
+  const { source, type, value } = discount;
+  if (!["manual", "coupon"].includes(source)) {
+    const err = new Error("discount.source must be 'manual' or 'coupon'");
+    err.status = 400;
+    throw err;
+  }
+  if (!["percent", "flat"].includes(type)) {
+    const err = new Error("discount.type must be 'percent' or 'flat'");
+    err.status = 400;
+    throw err;
+  }
+  const v = Number(value);
+  if (!Number.isFinite(v) || v < 0) {
+    const err = new Error("discount.value must be a non-negative number");
+    err.status = 400;
+    throw err;
+  }
+  if (type === "percent" && v > 100) {
+    const err = new Error("discount.value cannot exceed 100 for percent");
+    err.status = 400;
+    throw err;
+  }
+  if (type === "flat") {
+    const subtotal = items.reduce((s, it) => {
+      const q = Number(it?.qtyKg ?? it?.qty ?? it?.quantity ?? 0);
+      const p = Number(it?.price ?? 0);
+      return s + q * p;
+    }, 0);
+    if (v > subtotal) {
+      const err = new Error("discount.value cannot exceed the invoice subtotal");
+      err.status = 400;
+      throw err;
+    }
+  }
+  if (source === "coupon") {
+    if (!discount.code || !String(discount.code).trim()) {
+      const err = new Error("coupon code is required for discount.source=coupon");
+      err.status = 400;
+      throw err;
+    }
+    const resolved = await couponsQueries.findActiveByCode(discount.code, scope);
+    if (!resolved || !resolved.active) {
+      const err = new Error("coupon invalid or expired");
+      err.status = 400;
+      throw err;
+    }
+    // Server is authoritative — overwrite the client-claimed values
+    // with the DB row. This is the line that prevents coupon spoofing.
+    discount.type = "percent";
+    discount.value = Number(resolved.value);
+    discount.code = resolved.code;
+  }
+  return discount;
 };
 
 app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
