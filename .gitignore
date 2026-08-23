@@ -1,4 +1,13 @@
 node_modules/
 .env
+.env.*
+!.env.example
 db/data-archive/
 server/data/archive-*/
+uploads/
+data/
+.vscode/
+.idea/
+.DS_Store
+.vercel/
+*.log

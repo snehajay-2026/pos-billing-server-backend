@@ -19,12 +19,19 @@ const { query } = require("../pool");
 // Columns selected in every read. Kept as a single source of truth so
 // rowToProduct() and the SELECT list never drift.
 const COLUMNS =
-  "id, name, price, gst, stock, barcode, category, unit, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, name, price, gst, stock, barcode, category, unit, image_path, image_mime, _store_type, _store_id, _user_email, created_at, updated_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+};
+
+// Compute the absolute URL the frontend uses to load the product image.
+// Returns null when no image is attached so the UI can render its fallback.
+const imageUrlFor = (row) => {
+  if (!row || !row.id || !row.image_path) return null;
+  return `/api/products/${Number(row.id)}/image`;
 };
 
 const rowToProduct = (row) => {
@@ -38,6 +45,9 @@ const rowToProduct = (row) => {
     barcode: row.barcode || null,
     category: row.category || null,
     unit: row.unit || "unit",
+    imageUrl: imageUrlFor(row),
+    imagePath: row.image_path || null,
+    imageMime: row.image_mime || null,
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
@@ -137,7 +147,8 @@ const create = async (item, scope) => {
 // update: applies only the columns present in `patch`. We don't pass
 // `null` for missing keys because that would NULL out fields the caller
 // didn't intend to clear. Same shape as the JSON path which does
-// `{ ...existing, ...patch }`.
+// `{ ...existing, ...patch }`. `removeImage: true` clears the image
+// reference (the route also unlinks the file from disk).
 const update = async (id, patch) => {
   const allowed = ["name", "price", "gst", "stock", "barcode", "category", "unit"];
   const sets = [];
@@ -150,6 +161,10 @@ const update = async (id, patch) => {
     sets.push(`\`${k}\` = ?`);
     params.push(v);
   }
+  if (patch.removeImage === true) {
+    sets.push("`image_path` = NULL");
+    sets.push("`image_mime` = NULL");
+  }
   if (!sets.length) {
     // Nothing to update; just bump updated_at and return the current row.
     await query("UPDATE products SET updated_at = NOW(3) WHERE id = ?", [id]);
@@ -158,6 +173,16 @@ const update = async (id, patch) => {
   sets.push("updated_at = NOW(3)");
   params.push(id);
   await query(`UPDATE products SET ${sets.join(", ")} WHERE id = ?`, params);
+  return findById(id);
+};
+
+// setImage: stamps the image_path / image_mime on a product row. Called
+// from POST /api/products/:id/image after the file is written to disk.
+const setImage = async (id, { imagePath, imageMime }) => {
+  await query(
+    `UPDATE products SET image_path = ?, image_mime = ?, updated_at = NOW(3) WHERE id = ?`,
+    [imagePath || null, imageMime || null, id]
+  );
   return findById(id);
 };
 
@@ -172,5 +197,6 @@ module.exports = {
   findByIdScoped,
   create,
   update,
+  setImage,
   deleteById,
 };

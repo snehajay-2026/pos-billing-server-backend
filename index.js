@@ -1936,6 +1936,114 @@ app.get("/api/inventory/low-stock", ensureAuth, async (req, res) => {
   res.json(await inventoryQueries.lowStockAlerts(getInvScope(req)));
 });
 
+// === Product images (Upload Picture) =======================================
+//
+// Routes:
+//   POST   /api/products/:id/image  — multipart upload, replace image
+//   GET    /api/products/:id/image  — stream the stored image bytes
+//   DELETE /api/products/:id/image  — clear image (DB + filesystem)
+//
+// Auth: same scope check as the rest of the products routes. The image
+// route is intercepted *before* the generic `/api/:resource/:id` DELETE
+// below so we can also unlink the on-disk file when a product is deleted
+// (the dedicated DELETE handler does that).
+
+const productImages = require("./lib/product-images");
+const { parseFile } = require("./lib/multipart");
+
+// POST /api/products/:id/image
+// Replaces the product's image. Validates scope, MIME, and size before
+// writing to disk. Old file is unlinked after the new one is saved.
+app.post("/api/products/:id/image", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const existing = await productsQueries.findByIdScoped(id, scope);
+  if (!existing) return res.status(404).json({ error: "Product not found" });
+
+  let parsed;
+  try {
+    parsed = await parseFile(req, { fieldName: "image", maxBytes: productImages.MAX_BYTES });
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  if (!parsed) {
+    return res.status(400).json({ error: "No image field in upload" });
+  }
+  if (!productImages.ALLOWED_MIME.has(String(parsed.mime || "").toLowerCase())) {
+    return res
+      .status(400)
+      .json({ error: `Unsupported image type: ${parsed.mime}. Allowed: jpg, png, webp, gif.` });
+  }
+
+  let saved;
+  try {
+    saved = await productImages.save({ productId: id, buffer: parsed.buffer, mime: parsed.mime });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const updated = await productsQueries.setImage(id, saved);
+
+  // Best-effort unlink of the previous file. Done after the DB update so
+  // a save failure doesn't leave an orphan with a broken link.
+  if (existing.imagePath && existing.imagePath !== saved.imagePath) {
+    await productImages.unlinkIfExists(existing.imagePath);
+  }
+
+  return res.json(updated);
+});
+
+// GET /api/products/:id/image
+// Streams the stored image. Auth-protected (matches the rest of the
+// products endpoints — no public product images).
+app.get("/api/products/:id/image", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const existing = await productsQueries.findByIdScoped(id, scope);
+  if (!existing) return res.status(404).json({ error: "Product not found" });
+  if (!existing.imagePath) return res.status(404).json({ error: "No image" });
+
+  const file = await productImages.readForServe(existing.imagePath);
+  if (!file) return res.status(404).json({ error: "Image file missing on disk" });
+
+  res.set("Content-Type", existing.imageMime || "application/octet-stream");
+  res.set("Content-Length", String(file.size));
+  res.set("Cache-Control", "private, max-age=300");
+  return res.send(file.buffer);
+});
+
+// DELETE /api/products/:id/image
+// Clears the image reference and unlinks the file. The product row is
+// otherwise untouched.
+app.delete("/api/products/:id/image", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const existing = await productsQueries.findByIdScoped(id, scope);
+  if (!existing) return res.status(404).json({ error: "Product not found" });
+
+  if (existing.imagePath) {
+    await productImages.unlinkIfExists(existing.imagePath);
+  }
+  const updated = await productsQueries.setImage(id, { imagePath: null, imageMime: null });
+  return res.json(updated);
+});
+
+// DELETE /api/products/:id
+// Dedicated handler so we can also unlink the product's image file when
+// the row is deleted. Must be declared BEFORE the generic
+// `app.delete("/api/:resource/:id", ...)` so Express matches it first.
+app.delete("/api/products/:id", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const existing = await productsQueries.findByIdScoped(id, scope);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (existing.imagePath) {
+    await productImages.unlinkIfExists(existing.imagePath);
+  }
+  const ok = await productsQueries.deleteById(id);
+  return res.json({ ok });
+});
+
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   // Every resource in this codebase has a MySQL-backed query module;
