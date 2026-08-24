@@ -91,11 +91,19 @@ exports.create = async (data) => {
   if (!Number.isFinite(value) || value < 0) {
     throw new Error("coupon value must be a non-negative number");
   }
+  const usageLimit =
+    data.usageLimit == null || data.usageLimit === ""
+      ? null
+      : Number(data.usageLimit);
+  if (usageLimit != null && (!Number.isInteger(usageLimit) || usageLimit < 1)) {
+    throw new Error("usageLimit must be a positive integer or null");
+  }
   const [r] = await query(
     `INSERT INTO hotel_coupons
-       (code, type, value, min_subtotal, valid_from, valid_until, active,
+       (code, type, value, min_subtotal, valid_from, valid_until,
+        active, usage_limit, usage_count,
         _store_type, _store_id, _user_email)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       code,
       "percent",
@@ -106,6 +114,8 @@ exports.create = async (data) => {
       data.validFrom || null,
       data.validUntil || null,
       data.active === false ? 0 : 1,
+      usageLimit,
+      0,
       data._storeType || null,
       data._storeId || null,
       data._userEmail || null,
@@ -118,7 +128,7 @@ exports.create = async (data) => {
 // payload (the `_storeType` etc. on the patch would be ignored).
 // `active = 0` is the soft-delete the Settings UI uses.
 exports.update = async (id, patch, scope) => {
-  const allow = ["value", "minSubtotal", "validFrom", "validUntil", "active"];
+  const allow = ["value", "minSubtotal", "validFrom", "validUntil", "active", "usageLimit"];
   const sets = [];
   const args = [];
   for (const k of allow) {
@@ -131,6 +141,14 @@ exports.update = async (id, patch, scope) => {
       v = v == null || v === "" ? null : Number(v);
     } else if (k === "active") {
       v = v ? 1 : 0;
+    } else if (k === "usageLimit") {
+      // Map camelCase input → snake_case DB column. usageLimit (single
+      // cap) is owner-tunable; usageCount is server-bumped only.
+      v = v == null || v === "" ? null : Number(v);
+      if (v != null && (!Number.isInteger(v) || v < 1)) continue;
+      sets.push("usage_limit = ?");
+      args.push(v);
+      continue;
     }
     sets.push(`${camelToSnake(k)} = ?`);
     args.push(v);
@@ -164,3 +182,40 @@ exports.findById = async (id) => {
 function camelToSnake(name) {
   return name.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 }
+
+// Bump usage_count on a coupon atomically. Caller passes a connection
+// from withTransaction() so the increment is part of the same DB
+// transaction as the invoice INSERT — there is no window where the
+// invoice persists but the count doesn't bump (or where two parallel
+// redemptions both pass a check then double-decrement).
+//
+// Returns the new usage_count, or null if the coupon is already at its
+// limit (caller should treat that as a validation failure and abort the
+// surrounding transaction).
+exports.incrementRedemption = async (conn, id) => {
+  const exec = conn || (await require("../pool").query.getPool());
+  // The closure above lets call-sites pass either a transaction
+  // connection or fall back to the shared pool. In practice every
+  // production caller passes a conn; the fallback is just to make
+  // unit-testing easier.
+  const runner = conn
+    ? (sql, args) => conn.query(sql, args)
+    : (sql, args) => require("../pool").query(sql, args);
+  // Single statement: SELECT then UPDATE under the same lock. MySQL
+  // takes a row lock on the SELECT FOR UPDATE so concurrent cashiers
+  // can't both read usage_count=N-1 and both increment.
+  const [checkRows] = await runner(
+    `SELECT usage_limit, usage_count FROM hotel_coupons WHERE id = ? FOR UPDATE`,
+    [id]
+  );
+  if (!checkRows || checkRows.length === 0) return null;
+  const { usage_limit, usage_count } = checkRows[0];
+  if (usage_limit != null && usage_count >= usage_limit) {
+    return null; // at the cap — caller should 400 and abort
+  }
+  await runner(
+    `UPDATE hotel_coupons SET usage_count = usage_count + 1 WHERE id = ?`,
+    [id]
+  );
+  return usage_count + 1;
+};

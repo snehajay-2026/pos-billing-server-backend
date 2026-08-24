@@ -184,7 +184,7 @@ const findByInvoiceNo = async (invoiceNo) => {
 //
 // Returns: { invoice, updatedStock } matching the JSON path's response
 // shape so the route handler can return it verbatim.
-const createWithStockDecrement = async (invoice, resolveQty, scope) => {
+const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
   const items = Array.isArray(invoice.items) ? invoice.items : [];
   if (items.length === 0) {
     const err = new Error("Invoice has no line items");
@@ -201,7 +201,15 @@ const createWithStockDecrement = async (invoice, resolveQty, scope) => {
   const updatedStock = [];
   const { customerName, customerMobile } = resolveCustomer(invoice);
 
-  return withTransaction(async (conn) => {
+  // If the caller already opened a transaction (e.g. /api/invoices/checkout
+  // wraps stock decrement + invoice INSERT + coupon usage-count bump
+  // together), reuse the connection instead of starting a nested
+  // transaction (MySQL would error with "There is already an active
+  // transaction"). Otherwise open our own transaction the legacy way.
+  const runInTransaction = async (fn) =>
+    conn ? fn(conn) : withTransaction(fn);
+
+  return runInTransaction(async (conn) => {
     // 1. Lock + validate every line item.
     for (const item of items) {
       const [rows] = await conn.query(
@@ -317,7 +325,12 @@ const list = async (scope) => {
 // create: insert a new invoice WITHOUT touching products. Used by
 // /api/:resource POST. The atomic decrement lives in
 // createWithStockDecrement above (used by /api/invoices/checkout).
-const create = async (item, scope) => {
+//
+// `conn` is optional: when passed, the INSERT runs on the supplied
+// transaction connection so it can join withTransaction() blocks
+// (e.g. atomic coupon usage-count bump). When omitted, the call uses
+// the shared pool and behaves exactly as before.
+const create = async (item, scope, conn) => {
   const id = Date.now();
   const { customerName, customerMobile } = resolveCustomer(item);
   const generatedAtSql = item.generatedAt ? toMysqlDatetime(item.generatedAt) : null;
@@ -352,11 +365,26 @@ const create = async (item, scope) => {
     scope.email || null,
   ];
   if (hasGeneratedAtColumn) insertParams.push(generatedAtSql);
-  await query(
+  const exec = conn
+    ? (sql, params) => conn.query(sql, params)
+    : query;
+  await exec(
     `INSERT INTO invoices (${insertCols}) VALUES (${insertVals})`,
     insertParams
   );
-  return findByInvoiceNo(item.invoiceNo || item.invoice_no);
+  // Read back via the same connection so the caller sees the just-
+  // inserted row even when the transaction hasn't COMMITted yet.
+  const readExec = conn
+    ? (sql, params) => conn.query(sql, params)
+    : query;
+  const [rows] = await readExec(
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE id = ? LIMIT 1`,
+    [id]
+  );
+  if (!rows || rows.length === 0) {
+    return findByInvoiceNo(item.invoiceNo || item.invoice_no);
+  }
+  return rowToInvoice(rows[0]);
 };
 
 const findByIdScoped = async (id, scope) => {

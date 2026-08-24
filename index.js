@@ -883,6 +883,29 @@ app.get("/api/events", ensureAuth, sseHandler);
 // `POST /api/invoices` (via `validateHotelDiscount`) — this endpoint
 // is purely UX, not security.
 
+// Map a raw hotel_coupons row (snake_case from MySQL) to the camelCase
+// shape the frontend expects. The Settings UI panel reads
+// `usageLimit`/`usageCount` directly; we don't want to scatter
+// snake_case → camelCase mapping across three endpoints.
+const toCamelCoupon = (row) => {
+  if (!row) return null;
+  return {
+    id: row.id,
+    code: row.code,
+    type: row.type,
+    value: row.value != null ? Number(row.value) : 0,
+    minSubtotal: row.min_subtotal != null ? Number(row.min_subtotal) : null,
+    validFrom: row.valid_from || null,
+    validUntil: row.valid_until || null,
+    active: !!row.active,
+    usageLimit: row.usage_limit != null ? Number(row.usage_limit) : null,
+    usageCount: Number(row.usage_count) || 0,
+    _storeType: row._store_type || null,
+    _storeId: row._store_id || null,
+    _userEmail: row._user_email || null,
+  };
+};
+
 // Cashier-facing coupon lookup. Returns `{ valid: false }` for any
 // unresolvable code; the cashier's UI surfaces this as a validation
 // error.
@@ -912,6 +935,14 @@ app.get("/api/hotel/coupons/:code", async (req, res) => {
       value: Number(row.value),
       label: row.code,
       minSubtotal: row.min_subtotal != null ? Number(row.min_subtotal) : 0,
+      // Surface remaining uses so the cashier UI can warn "only N
+      // redemptions left". null usage_limit means unlimited.
+      usageLimit: row.usage_limit != null ? Number(row.usage_limit) : null,
+      usageCount: Number(row.usage_count) || 0,
+      remainingUses:
+        row.usage_limit != null
+          ? Math.max(0, Number(row.usage_limit) - (Number(row.usage_count) || 0))
+          : null,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -931,7 +962,7 @@ app.get("/api/hotel/coupons", ensureAuth, async (req, res) => {
       storeId: req.query.storeId,
       userEmail: req.user.email,
     });
-    res.json(rows);
+    res.json(rows.map(toCamelCoupon));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -989,7 +1020,7 @@ app.put("/api/hotel/coupons/:id", ensureAuth, async (req, res) => {
     if (!updated) {
       return res.status(404).json({ error: "Coupon not found" });
     }
-    res.json(updated);
+    res.json(toCamelCoupon(updated));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1180,15 +1211,35 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
   // checkout route but additionally enforces `source` (manual | coupon)
   // and re-resolves coupons from the DB so client-claimed values
   // cannot be spoofed. Runs before any write — failing here is cheap.
+  let resolvedCoupon = null;
   try {
-    await validateHotelDiscount(invoice.discount, items, scope);
+    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, scope);
   } catch (err) {
     const status = err.status || 400;
     return res.status(status).json({ error: err.message });
   }
 
   try {
-    const saved = await invoicesQueries.create(invoice, scope);
+    // Wrap INSERT + coupon usage-count bump in one transaction. If the
+    // coupon is already at its cap, incrementRedemption() returns null
+    // and the transaction rolls back — no half-saved invoice.
+    const saved = await withTransaction(async (conn) => {
+      if (resolvedCoupon && resolvedCoupon.id) {
+        const newCount = await couponsQueries.incrementRedemption(
+          conn,
+          resolvedCoupon.id
+        );
+        if (newCount == null) {
+          const err = new Error("coupon redemption limit reached");
+          err.status = 409;
+          throw err;
+        }
+      }
+      // The invoices module accepts a `conn` so it joins the same
+      // transaction; otherwise we'd have a race where the invoice
+      // commits but the usage bump hadn't yet.
+      return invoicesQueries.create(invoice, scope, conn);
+    });
     if (!saved) {
       return res.status(500).json({ error: "Failed to persist invoice" });
     }
@@ -1265,6 +1316,11 @@ const validateDiscount = (discount, label) => {
 // `scope = { storeType, storeId, userEmail }` is the request scope
 // passed to the coupon lookup so a coupon row scoped to a different
 // store / owner doesn't validate.
+//
+// Returns the resolved coupon row when source=coupon so the caller
+// can call couponsQueries.incrementRedemption() in the same DB
+// transaction as the invoice INSERT — usage_limit is enforced
+// atomically and two concurrent redemptions can't both pass the cap.
 const validateHotelDiscount = async (discount, items, scope) => {
   if (discount == null) return null; // discount is optional
   if (typeof discount !== "object") {
@@ -1318,13 +1374,34 @@ const validateHotelDiscount = async (discount, items, scope) => {
       err.status = 400;
       throw err;
     }
+    // Enforce min_subtotal. Compute the same subtotal the flat-check
+    // above uses (items × price) and reject if the floor isn't met.
+    // Owner-set floor was previously stored but never checked at
+    // redemption — this is the missing piece.
+    if (resolved.min_subtotal != null) {
+      const subtotal = items.reduce((s, it) => {
+        const q = Number(it?.qtyKg ?? it?.qty ?? it?.quantity ?? 0);
+        const p = Number(it?.price ?? 0);
+        return s + q * p;
+      }, 0);
+      if (subtotal < Number(resolved.min_subtotal)) {
+        const err = new Error(
+          `coupon requires minimum subtotal of ${Number(resolved.min_subtotal)} (current ${subtotal.toFixed(2)})`
+        );
+        err.status = 400;
+        throw err;
+      }
+    }
     // Server is authoritative — overwrite the client-claimed values
     // with the DB row. This is the line that prevents coupon spoofing.
     discount.type = "percent";
     discount.value = Number(resolved.value);
     discount.code = resolved.code;
+    // Hand the resolved row back so the caller can increment the
+    // usage_count atomically with the invoice INSERT.
+    return resolved;
   }
-  return discount;
+  return null;
 };
 
 app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
@@ -1351,12 +1428,45 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
   }
 
   const scope = getRequestScope(req);
+  // Hotel coupon validation (min_subtotal + server-authoritative value
+  // resolution). Returns the resolved coupon row so we can bump its
+  // usage_count inside the same transaction as the invoice INSERT.
+  let resolvedCoupon = null;
   try {
-    const result = await invoicesQueries.createWithStockDecrement(
-      invoice,
-      resolveCheckoutQuantity,
-      scope
-    );
+    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, scope);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+
+  try {
+    // Atomic: stock decrement + invoice INSERT + coupon usage-count bump.
+    // Any failure rolls back the whole batch — no half-saved invoice and
+    // no orphan usage bump. The coupon bump uses SELECT ... FOR UPDATE
+    // inside the same transaction so two concurrent redemptions can't
+    // both pass the cap check.
+    const result = await withTransaction(async (conn) => {
+      if (resolvedCoupon && resolvedCoupon.id) {
+        const newCount = await couponsQueries.incrementRedemption(
+          conn,
+          resolvedCoupon.id
+        );
+        if (newCount == null) {
+          const err = new Error("coupon redemption limit reached");
+          err.status = 409;
+          throw err;
+        }
+      }
+      // createWithStockDecrement takes a 4th arg `conn` (added in the
+      // same change set) so it joins the same transaction. Without it
+      // the stock decrement + invoice INSERT would commit on a separate
+      // pool connection and could partially apply.
+      return invoicesQueries.createWithStockDecrement(
+        invoice,
+        resolveCheckoutQuantity,
+        scope,
+        conn
+      );
+    });
     // Broadcast the new invoice so other cashiers / admins in the same
     // store see live sales activity without polling.
     realtimeHub.publish(
