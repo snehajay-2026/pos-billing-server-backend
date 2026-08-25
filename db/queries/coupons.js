@@ -41,6 +41,12 @@ const { query } = require("../pool");
 exports.findActiveByCode = async (code, scope) => {
   if (!code) return null;
   const s = scope || {};
+  // COALESCE(?, '') = '' handles the cashier-side unauthenticated route:
+  // when no user email is known, the filter is skipped entirely so any
+  // active coupon in the store can match. `_user_email = NULL` would be
+  // the obvious fix but it's always false in SQL — COALESCE is the
+  // portable workaround. The userEmail param is passed twice: once for
+  // the empty-check and once for the equality fallback.
   const [rows] = await query(
     `SELECT *
        FROM hotel_coupons
@@ -48,14 +54,20 @@ exports.findActiveByCode = async (code, scope) => {
          AND active = 1
          AND (_store_type IS NULL OR _store_type = ?)
          AND (_store_id   IS NULL OR _store_id   = ?)
-         AND (_user_email IS NULL OR _user_email = ?)
+         AND (COALESCE(?, '') = '' OR _user_email IS NULL OR _user_email = ?)
          AND (valid_from  IS NULL OR valid_from  <= NOW())
          AND (valid_until IS NULL OR valid_until >= NOW())
        ORDER BY (_store_type IS NOT NULL) DESC,
                 (_store_id   IS NOT NULL) DESC,
                 (_user_email IS NOT NULL) DESC
        LIMIT 1`,
-    [String(code).trim(), s.storeType || null, s.storeId || null, s.userEmail || null]
+    [
+      String(code).trim(),
+      s.storeType || null,
+      s.storeId || null,
+      s.userEmail || null,
+      s.userEmail || null,
+    ]
   );
   return (rows && rows[0]) || null;
 };

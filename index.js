@@ -993,7 +993,10 @@ app.post("/api/hotel/coupons", ensureAuth, async (req, res) => {
       active: body.active === false ? false : true,
       _storeType: req.query.storeType || null,
       _storeId: req.query.storeId || null,
-      _userEmail: req.user.email,
+      // Coupons are store-wide by default so any cashier in the store
+      // can redeem them. Owners expecting a "my coupon only" scope can
+      // re-introduce user-scoping via a future toggle in the UI.
+      _userEmail: null,
     });
     res.status(201).json(created);
   } catch (err) {
