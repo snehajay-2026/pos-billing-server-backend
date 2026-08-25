@@ -14,7 +14,7 @@
 //   - `createdAt` / `updatedAt` come back as MySQL DATETIME strings;
 //     preserved as strings (frontend treats as ISO-compatible).
 
-const { query } = require("../pool");
+const { query, pool } = require("../pool");
 
 // Columns selected in every read. Kept as a single source of truth so
 // rowToProduct() and the SELECT list never drift.
@@ -116,7 +116,37 @@ const findByIdScoped = async (id, scope) => {
     `SELECT ${COLUMNS} FROM products WHERE id = ? ${where.sql ? "AND " + where.sql.replace(/^WHERE /, "") : ""} LIMIT 1`,
     [id, ...where.params]
   );
-  if (!rows[0] || rows[0].length === 0) return null;
+  if (!rows[0] || rows[0].length === 0) {
+    // Diagnostic: when the scoped lookup misses, also check whether the
+    // row exists at all under any scope. If it does, the row's stored
+    // scope differs from the request's — that's the kind of mismatch we
+    // want surfaced so a cashier isn't left wondering why "the product
+    // exists, I can see it in the list, but I can't upload its image".
+    // If the row doesn't exist under any scope, log that too so we know
+    // whether the INSERT actually landed (e.g. Date.now() collision, or
+    // the previous response was never received and the frontend is
+    // trying to upload against a never-committed id).
+    try {
+      const [anyRows] = await pool.query(
+        `SELECT id, _store_type, _store_id, _user_email
+           FROM products WHERE id = ? LIMIT 1`,
+        [id]
+      );
+      if (anyRows && anyRows.length) {
+        const r = anyRows[0];
+        console.warn(
+          `[products] findByIdScoped miss — id=${id} exists but row scope ` +
+            `${JSON.stringify({ _store_type: r._store_type, _store_id: r._store_id, _user_email: r._user_email })} ` +
+            `does not match request scope ${JSON.stringify(scope)}`
+        );
+      } else {
+        console.warn(`[products] findByIdScoped miss — id=${id} not in table at all (scope=${JSON.stringify(scope)})`);
+      }
+    } catch (diagErr) {
+      console.warn(`[products] findByIdScoped diagnostic failed:`, diagErr.message);
+    }
+    return null;
+  }
   return rowToProduct(rows[0][0]);
 };
 
