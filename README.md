@@ -46,6 +46,9 @@ Then restart the frontend.
 - `POST /api/products`
 - `PUT /api/products/:id`
 - `DELETE /api/products/:id`
+- `POST /api/products/:id/image` (multipart, field `image`)
+- `GET /api/products/:id/image`
+- `DELETE /api/products/:id/image`
 - `GET /api/services`
 - `POST /api/services`
 - `PUT /api/services/:id`
@@ -85,3 +88,21 @@ Then restart the frontend.
 - The backend uses the existing JSON files in `server/data/`.
 - Authentication is cookie-based. The server sets `sessionId` as a cookie.
 - If you want to deploy this backend, ensure the CORS origin matches your frontend origin and that cookies are configured correctly.
+
+## Product images (Upload Picture)
+
+- Files are stored under `server/uploads/products/` as
+  `p{productId}-{timestamp}-{rand}.{ext}`. Allowed MIME types:
+  `image/jpeg`, `image/jpg`, `image/png`, `image/webp`, `image/gif`.
+  Max size: **2 MB** (enforced in both the route and the frontend picker).
+- The `products` table has `image_path` and `image_mime` columns; these
+  are added on backend boot by `db/runtime-migrations.js` if missing,
+  so a fresh deploy to a database that never ran `009_product_images.sql`
+  self-heals without a manual DBA step.
+- **Hosting note:** on ephemeral-disk hosts (Render, Heroku, Railway
+  preview apps, plain Docker) the `uploads/` directory is wiped on every
+  deploy / restart. The DB still holds the relative path, so the product
+  row loads fine, but `<img>` tags will show the fallback icon until the
+  image is re-uploaded. For production, point the backend at object
+  storage (S3 / R2 / Spaces) — only `lib/product-images.js` would need
+  to change.

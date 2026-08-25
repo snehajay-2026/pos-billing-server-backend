@@ -26,12 +26,34 @@ const { query, pool } = require("./pool");
 //   - ddl: the full `ALTER TABLE ... ADD COLUMN` clause (no IF NOT EXISTS
 //          for portability with MySQL < 8; we gate on information_schema
 //          ourselves)
+//
+// Note: `products.image_path` + `products.image_mime` come from migration
+// `009_product_images.sql`. That file uses a stored procedure (the MySQL
+// Query tab on Railway is single-statement and cannot run procedures),
+// so on a fresh Railway DB the columns were never created. The product
+// image upload route tries to `UPDATE products SET image_path = ?,
+// image_mime = ?` and would 500 with "Unknown column" until the columns
+// existed. We re-apply the equivalent ALTERs here on every backend boot
+// so a redeploy to a DB that never ran the original migration still gets
+// the columns — without the operator having to drop into the Query tab.
 const MIGRATIONS = [
   {
     name: "invoices.status",
     table: "invoices",
     column: "status",
     ddl: "ALTER TABLE `invoices` ADD COLUMN `status` VARCHAR(32) NULL AFTER `billed_by`",
+  },
+  {
+    name: "products.image_path",
+    table: "products",
+    column: "image_path",
+    ddl: "ALTER TABLE `products` ADD COLUMN `image_path` VARCHAR(255) NULL AFTER `unit`",
+  },
+  {
+    name: "products.image_mime",
+    table: "products",
+    column: "image_mime",
+    ddl: "ALTER TABLE `products` ADD COLUMN `image_mime` VARCHAR(64) NULL AFTER `image_path`",
   },
 ];
 
@@ -96,3 +118,4 @@ const runRuntimeMigrations = async () => {
 };
 
 module.exports = { runRuntimeMigrations, MIGRATIONS };
+
