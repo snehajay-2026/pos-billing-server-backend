@@ -30,6 +30,7 @@ const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
 const couponsQueries = require("./db/queries/coupons");
+const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 
@@ -1032,6 +1033,18 @@ app.put("/api/hotel/coupons/:id", ensureAuth, async (req, res) => {
 // Friendly alias for the SSE endpoint so we can disambiguate it from
 // other /api/* in production logs and reverse proxies.
 app.get("/api/sse", ensureAuth, sseHandler);
+
+// Lodging room layout (the physical rooms — Room 101, 102, … — that
+// every cashier sees on the Lodging tab) is owner-configured per-device
+// and persisted in localStorage. We don't have a server-side rooms table
+// yet, so this endpoint echoes an empty array. The frontend's
+// `hotelService.getRooms()` only overwrites local state when the response
+// is non-empty (see HotelBilling.jsx:loadRooms), so returning `[]` keeps
+// the cashier's locally-seeded layout intact while silencing the 404 in
+// the browser console.
+app.get("/api/hotel/rooms", ensureAuth, async (req, res) => {
+  res.json([]);
+});
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   const resource = resolveHotelResource(req.params.resource);
