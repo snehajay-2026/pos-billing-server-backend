@@ -2126,11 +2126,20 @@ app.get("/api/products/:id/image", ensureAuth, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await productsQueries.findByIdScoped(id, scope);
-  if (!existing) return res.status(404).json({ error: "Product not found" });
-  if (!existing.imagePath) return res.status(404).json({ error: "No image" });
+  if (!existing) {
+    console.warn(`[image] GET 404 product-not-found id=${id} scope=${JSON.stringify(scope)}`);
+    return res.status(404).json({ error: "Product not found" });
+  }
+  if (!existing.imagePath) {
+    console.warn(`[image] GET 404 no-image id=${id}`);
+    return res.status(404).json({ error: "No image" });
+  }
 
   const file = await productImages.readForServe(existing.imagePath);
-  if (!file) return res.status(404).json({ error: "Image file missing on disk" });
+  if (!file) {
+    console.warn(`[image] GET 404 file-missing id=${id} storedPath=${existing.imagePath}`);
+    return res.status(404).json({ error: "Image file missing on disk" });
+  }
 
   res.set("Content-Type", existing.imageMime || "application/octet-stream");
   res.set("Content-Length", String(file.size));
