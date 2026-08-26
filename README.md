@@ -99,10 +99,26 @@ Then restart the frontend.
   are added on backend boot by `db/runtime-migrations.js` if missing,
   so a fresh deploy to a database that never ran `009_product_images.sql`
   self-heals without a manual DBA step.
-- **Hosting note:** on ephemeral-disk hosts (Render, Heroku, Railway
-  preview apps, plain Docker) the `uploads/` directory is wiped on every
-  deploy / restart. The DB still holds the relative path, so the product
-  row loads fine, but `<img>` tags will show the fallback icon until the
-  image is re-uploaded. For production, point the backend at object
-  storage (S3 / R2 / Spaces) — only `lib/product-images.js` would need
-  to change.
+
+> ### ⚠ EPHEMERAL DISK — re-upload required after every backend deploy
+>
+> On Render, Heroku, Railway preview apps, and plain Docker, the
+> `uploads/` directory is wiped on **every** deploy or restart. The DB
+> row's `image_path` is unaffected, so the product list still loads —
+> but the actual image bytes are gone, and `<img>` tags silently fall
+> back to the placeholder icon until the image is re-uploaded.
+>
+> This bites in practice: every time you push a backend change (even
+> just a diagnostic log), all previously-uploaded product images
+> disappear on the next render and need to be re-uploaded. There is no
+> workaround on hosts with ephemeral disk.
+>
+> **For production, point `lib/product-images.js` at object storage**
+> (S3 / Cloudflare R2 / Backblaze B2 / DigitalOcean Spaces). Only that
+> one file needs to change — `save()`, `readForServe()`,
+> `unlinkIfExists()`, and `resolveSafe()` are the only callers. The DB
+> column can stay as a string key (URL or storage key); the resolveSafe
+> prefix-strip handles both legacy local paths and future object-storage
+> keys.
+>
+> Tracking: TODO — migrate `lib/product-images.js` to object storage.
