@@ -860,6 +860,55 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
   res.json({ ok: true });
 });
 
+// Free-up a hotel room by room id. Resolves the (kind='lodging', room_id=:id)
+// booking within scope, marks it checked_out, and publishes a `booking`
+// SSE event so every connected device in the same store flips the room
+// to Available without a page refresh.
+//
+// The cashier's "Checkout" button on the RoomCard calls
+// `hotelService.checkoutRoom(id)` which posts here. Previously this
+// route didn't exist — the request hit the 404 catch-all and the MySQL
+// row stayed `booked`, so Device 2 never learned about the clear until
+// it refreshed and `loadRoomBookingsOverlay` re-fetched.
+//
+// The published event uses `buildBookingEvent` (not `buildHotelEvent`)
+// so the frontend's SSE handler at `HotelBilling.jsx:975` finds
+// `event.booking` and runs the existing `uiRoomStatus()` translator.
+// The event's `action: "checked_out"` short-circuits that translator
+// to "vacant" — matching what the cashier's local checkout flow writes
+// into `lodgingRooms[].status`.
+app.post("/api/hotel/rooms/:id/checkout", ensureAuth, async (req, res) => {
+  const roomId = String(req.params.id || "").trim();
+  if (!roomId) return res.status(400).json({ error: "room id is required" });
+  const scope = {
+    storeType: req.query.storeType || req.user?.storeType || "hotel",
+    storeId: req.query.storeId || req.user?.storeId || "hotel",
+  };
+  // Find the active ("booked") lodging booking for this room within
+  // scope. Falls through to a 404 if no such booking exists — protects
+  // against a cashier double-clicking checkout (the second click sees
+  // status='checked_out' and skips).
+  const existing = await hotelBookingsQueries.findByRefId(
+    "lodging",
+    roomId,
+    { storeType: scope.storeType, storeId: scope.storeId, status: "booked" }
+  );
+  if (!existing) return res.status(404).json({ error: "No active booking for this room" });
+  // Flip the row to checked_out + record actual_check_out + bump
+  // updated_at so any delayed SSE replay (older updatedAt) cannot
+  // overwrite the newer state on other devices.
+  const updated = await hotelBookingsQueries.checkout(existing.id);
+  if (!updated) return res.status(500).json({ error: "Failed to checkout booking" });
+  realtimeHub.publish(
+    realtimeHub.buildBookingEvent({
+      action: "checked_out",
+      booking: updated,
+      scope: { storeType: updated._storeType, storeId: updated._storeId },
+    })
+  );
+  res.json(updated);
+});
+
 // === Real-time sync (SSE) ===================================================
 // Native EventSource on the client. Long-lived HTTP/1.1 chunked response
 // that survives proxies (Render, Cloudflare) better than WebSocket.
@@ -1085,6 +1134,97 @@ app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
   }
   const removed = await hotelQueries.removeItem(resource, req.params.id);
   res.json({ ok: removed });
+});
+
+// PUT /api/hotel/tables/:id — update a dining-table layout entry (the
+// physical tables T1–T6 the cashier sees on the Dining tab). The frontend's
+// `hotelService.updateTable()` (called from `handleDiningTableClear`,
+// `releaseDiningTableAfterBilling`, etc.) has historically returned 404
+// because only GET/POST/DELETE catch-alls were registered for the
+// hotel/:resource family. This dedicated route writes through to the
+// `tables` JSON slice on `hotel_state` and publishes a `table_updated`
+// event so other devices see the layout edit (table rename, seat-count
+// change, zone edit, or status flip) instantly.
+//
+// IMPORTANT: do NOT repurpose this route to mutate booking state —
+// booking CRUD lives in `hotel_bookings` (see POST /api/hotel/bookings
+// above) and SSE-booking events already fan out from there. This route
+// is purely for the dining-table layout slice.
+app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
+  const tableId = String(req.params.id || "");
+  if (!tableId) {
+    return res.status(400).json({ error: "tableId is required" });
+  }
+  const payload = req.body || {};
+  const tables = (await hotelQueries.getSlice("tables")) || [];
+  const idx = tables.findIndex(
+    (item) => String(item.id) === tableId || String(item.tableId) === tableId
+  );
+  let next;
+  let nextTables;
+  if (idx >= 0) {
+    next = { ...tables[idx], ...payload, id: tableId };
+    nextTables = tables.slice();
+    nextTables[idx] = next;
+  } else {
+    next = { id: tableId, ...payload };
+    nextTables = [...tables, next];
+  }
+  await hotelQueries.replaceSlice("tables", nextTables);
+  realtimeHub.publish(
+    realtimeHub.buildHotelEvent({
+      action: "table_updated",
+      kind: "table",
+      storeType: req.query.storeType,
+      storeId: req.query.storeId,
+      data: { tableId, table: next },
+    })
+  );
+  res.json(next);
+});
+
+// POST /api/hotel/tables/:id/checkout — flip the active dining booking
+// for this table to checked_out. Mirrors `POST /api/hotel/rooms/:id/checkout`
+// (the Lodging equivalent) so the cashier's "Clear Table" click emits a
+// `kind:"booking", action:"checked_out"` event that the existing SSE
+// subscriber in HotelBilling.jsx already knows how to merge.
+//
+// We use `buildBookingEvent` (not `buildHotelEvent`) because the frontend
+// listener checks `event.kind === "booking" && event.booking` before
+// merging — `buildHotelEvent` ships only `event.data`, which the listener
+// silently ignores. Reusing the same shape as the Lodging route keeps
+// the listener single-purpose.
+app.post("/api/hotel/tables/:id/checkout", ensureAuth, async (req, res) => {
+  const tableId = String(req.params.id || "").trim();
+  if (!tableId) return res.status(400).json({ error: "table id is required" });
+  const scope = {
+    storeType: req.query.storeType || req.user?.storeType || "hotel",
+    storeId: req.query.storeId || req.user?.storeId || "hotel",
+  };
+  const existing = await hotelBookingsQueries.findByRefId(
+    "dining",
+    tableId,
+    { storeType: scope.storeType, storeId: scope.storeId, status: "booked" }
+  );
+  if (!existing) {
+    // No active dining booking for this table. Return 200 with a
+    // sentinel so the cashier's Clear Table flow doesn't surface a
+    // spurious error to the user (the table is already empty from
+    // their perspective — e.g. the previous cashier closed it).
+    return res.json({ ok: true, alreadyCheckedOut: true });
+  }
+  const updated = await hotelBookingsQueries.checkout(existing.id);
+  if (!updated) {
+    return res.status(500).json({ error: "Failed to checkout table" });
+  }
+  realtimeHub.publish(
+    realtimeHub.buildBookingEvent({
+      action: "checked_out",
+      booking: updated,
+      scope: { storeType: updated._storeType, storeId: updated._storeId },
+    })
+  );
+  res.json(updated);
 });
 
 app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
