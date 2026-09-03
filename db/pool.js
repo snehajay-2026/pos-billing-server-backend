@@ -46,6 +46,22 @@ const config = {
   multipleStatements: false,
 };
 
+// TLS support — required by TiDB Cloud, Aiven, PlanetScale, and most
+// managed MySQL providers. Local MySQL doesn't have TLS, so we only
+// enable it when DB_SSL=true is set in env.
+//
+// `rejectUnauthorized: false` because TiDB Cloud rotates certificates
+// and uses a public CA chain; the driver doesn't ship with the
+// intermediate CAs, so strict verification fails. The TLS tunnel still
+// encrypts the connection — we're just trusting the server cert, same
+// as mysqlsh / DBeaver defaults.
+if (String(process.env.DB_SSL).toLowerCase() === "true") {
+  config.ssl = {
+    rejectUnauthorized: false,
+    minVersion: "TLSv1.2",
+  };
+}
+
 if (!config.user || !config.password || !config.database) {
   // Fail fast at boot rather than at the first query. The common cause
   // is server/.env missing or named wrong.
