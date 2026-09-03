@@ -197,8 +197,12 @@ const ensureAuth = async (req, res, next) => {
 const getRequestScope = (req) => {
   // SUPER_OWNER is unscoped: they see data across all stores. The query-
   // string storeType/storeId overrides win for explicit filtering.
+  //
+  // `email` is always populated for SUPER_OWNER even when unscoped so
+  // the coupon redemption fallback (findActiveByCodeForOwner) can
+  // resolve cross-store coupons owned by this user.
   if (req.user?.role === "SUPER_OWNER" && !req.query.storeType) {
-    return { storeType: null, storeId: null, email: null };
+    return { storeType: null, storeId: null, email: req.user.email };
   }
   const storeType = String(req.query.storeType || req.user?.storeType || "").trim();
   const storeId = req.query.storeId !== undefined && req.query.storeId !== null
@@ -966,7 +970,14 @@ app.get("/api/hotel/coupons/:code", async (req, res) => {
     return res.status(400).json({ error: "storeType and storeId are required" });
   }
   try {
-    const row = await couponsQueries.findActiveByCode(code, {
+    // Optional auth: read the session if present, but don't require it.
+    // This endpoint is documented as unauthenticated for cashier UX
+    // (keystroke validation), but for SUPER_OWNER we want to fall back
+    // to an owner-scoped search if the exact store-scoped lookup misses
+    // — the owner should be able to redeem any of their own coupons
+    // regardless of which store context they're currently flipped to.
+    const sessionUser = await getUserFromSession(req);
+    let row = await couponsQueries.findActiveByCode(code, {
       storeType,
       storeId,
       // The userEmail is unknown without auth here — pass null so the
@@ -975,6 +986,18 @@ app.get("/api/hotel/coupons/:code", async (req, res) => {
       // scoped to either their email or to "anyone in this store".
       userEmail: null,
     });
+    // Owner-scoped fallback. If the caller is a logged-in user and their
+    // exact store scope didn't find the coupon, look across all of their
+    // coupons (NULL _user_email OR matching) — this is the SUPER_OWNER
+    // multi-store redemption case where they just created a coupon in
+    // one store and are now redeeming it from a different one.
+    //
+    // SECURITY: `findActiveByCodeForOwner` is gated by an authenticated
+    // session here, not by a query param, so an anonymous caller can't
+    // pass `?email=...` to brute-force coupons across stores.
+    if (!row && sessionUser) {
+      row = await couponsQueries.findActiveByCodeForOwner(code, sessionUser.email);
+    }
     if (!row) {
       return res.status(404).json({ valid: false, message: "Invalid coupon code" });
     }
@@ -1524,7 +1547,18 @@ const validateHotelDiscount = async (discount, items, scope) => {
       err.status = 400;
       throw err;
     }
-    const resolved = await couponsQueries.findActiveByCode(discount.code, scope);
+    let resolved = await couponsQueries.findActiveByCode(discount.code, scope);
+    // Owner-scoped fallback for SUPER_OWNER: if the exact store scope
+    // didn't match (e.g. the owner created the coupon in one store and
+    // is now invoicing from a different store context), look across all
+    // of their owned coupons. `scope.email` is populated for the
+    // SUPER_OWNER case in getRequestScope().
+    if (!resolved && scope?.email) {
+      resolved = await couponsQueries.findActiveByCodeForOwner(
+        discount.code,
+        scope.email
+      );
+    }
     if (!resolved || !resolved.active) {
       const err = new Error("coupon invalid or expired");
       err.status = 400;

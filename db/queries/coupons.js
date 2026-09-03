@@ -72,6 +72,35 @@ exports.findActiveByCode = async (code, scope) => {
   return (rows && rows[0]) || null;
 };
 
+// Owner-scoped fallback. Used when the cashier's exact-scope lookup
+// misses (e.g. the SUPER_OWNER just created a coupon while scoped to
+// one store, then switched to a different store in the dropdown
+// before redeeming it). Looks for any active coupon owned by the
+// caller (NULL or matching `_user_email`), ignoring storeType/storeId
+// entirely — the owner is allowed to redeem any of their own coupons
+// from any store context.
+//
+// SECURITY: This must ONLY be called for authenticated requests where
+// `req.user` has already been resolved by `ensureAuth`. Without that
+// gate, an unauthenticated caller could pass an arbitrary `ownerEmail`
+// and brute-force coupons across stores.
+exports.findActiveByCodeForOwner = async (code, ownerEmail) => {
+  if (!code || !ownerEmail) return null;
+  const [rows] = await query(
+    `SELECT *
+       FROM hotel_coupons
+       WHERE code = ?
+         AND active = 1
+         AND (_user_email IS NULL OR _user_email = ?)
+         AND (valid_from  IS NULL OR valid_from  <= NOW())
+         AND (valid_until IS NULL OR valid_until >= NOW())
+       ORDER BY (_user_email IS NOT NULL) DESC
+       LIMIT 1`,
+    [String(code).trim(), String(ownerEmail).trim()]
+  );
+  return (rows && rows[0]) || null;
+};
+
 // List every coupon in scope (active first, then by code). Powers the
 // Settings UI.
 exports.listScoped = async (scope) => {
