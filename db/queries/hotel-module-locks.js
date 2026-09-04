@@ -38,17 +38,75 @@ const listAll = async () => {
   return rows[0].map(rowToLock);
 };
 
+// listAllEnriched: Super Owner dashboard — every hotel tenant admin
+// joined with their lock state. Includes tenants that have NEVER had a
+// lock set (LEFT JOIN on hotel_module_locks) so the dashboard has an
+// entry point for the very first Lock click.
+//
+// Returns one row per (customer, module) with user identity attached —
+// the frontend's HotelModuleAccessPage groups these by customerEmail and
+// renders them as one row per tenant with three module columns.
+//
+// Restricted to ADMIN role + store_type='hotel' so the Super Owner only
+// sees real hotel tenants, not their cashiers/store-admins or any
+// Retail/Laundry/Service user.
+const listAllEnriched = async () => {
+  const rows = await query(
+    `SELECT u.email       AS customer_email,
+            u.name        AS name,
+            u.store_type  AS store_type,
+            u.store_id    AS store_id,
+            l.module      AS module,
+            l.locked      AS locked,
+            l.locked_by   AS locked_by,
+            l.locked_at   AS locked_at,
+            l.updated_at  AS updated_at
+       FROM users u
+       LEFT JOIN hotel_module_locks l
+              ON l.customer_email = u.email
+      WHERE u.store_type = 'hotel' AND u.role = 'ADMIN'
+      ORDER BY u.email ASC, l.module ASC`
+  );
+  return rows[0].map((r) => ({
+    customerEmail: r.customer_email,
+    name: r.name || null,
+    storeType: r.store_type || null,
+    storeId: r.store_id || null,
+    module: r.module || null, // null when no lock row exists yet
+    locked: r.locked != null ? !!r.locked : false,
+    lockedBy: r.locked_by || null,
+    lockedAt: r.locked_at || null,
+    updatedAt: r.updated_at || null,
+  }));
+};
+
 // getMyLocks: collapsed to one row per module for the given customer.
 // Always returns {lodging, dining, liveBill} — false when no row exists.
-const getMyLocks = async (customerEmail) => {
+//
+// `ownerEmail` is the tenant's top-level admin email (resolved from
+// req.user.owner_email || req.user.root_owner_email || req.user.email
+// in the route). It is matched alongside the user's own email so a child
+// user (cashier, branch-admin) inherits the lock set against their admin.
+// For the admin themselves ownerEmail === customerEmail and the IN-list
+// collapses to a single match.
+const getMyLocks = async (customerEmail, ownerEmail) => {
   if (!customerEmail) {
     return { lodging: false, dining: false, liveBill: false, customerEmail: null };
   }
   const normalized = String(customerEmail).trim().toLowerCase();
+  const normalizedOwner = ownerEmail
+    ? String(ownerEmail).trim().toLowerCase()
+    : normalized;
+  // When the user IS the tenant admin (no separate owner), the IN clause
+  // collapses to a single value — passing the same email twice is
+  // harmless to MySQL and keeps the prepared-statement param list sane.
+  const params =
+    normalizedOwner === normalized ? [normalized] : [normalized, normalizedOwner];
+  const placeholders = params.map(() => "?").join(", ");
   const rows = await query(
     `SELECT customer_email, module, locked FROM hotel_module_locks
-     WHERE customer_email = ?`,
-    [normalized]
+     WHERE customer_email IN (${placeholders})`,
+    params
   );
   const out = { lodging: false, dining: false, liveBill: false, customerEmail: normalized };
   for (const r of rows[0]) {
@@ -94,6 +152,7 @@ const setLock = async (customerEmail, module, locked, lockedBy) => {
 
 module.exports = {
   listAll,
+  listAllEnriched,
   getMyLocks,
   setLock,
 };

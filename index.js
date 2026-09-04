@@ -721,11 +721,29 @@ app.get("/api/hotel/module-locks", ensureAuth, async (req, res) => {
   if (req.user?.role !== "SUPER_OWNER") {
     return res.status(403).json({ error: "Only Super Owner can list all hotel module locks" });
   }
-  res.json(await hotelModuleLocksQueries.listAll());
+  // Enriched list: hotel tenants + their (possibly absent) lock rows,
+  // so the dashboard has an entry for every tenant — even ones that
+  // haven't had a lock set yet.
+  try {
+    res.json(await hotelModuleLocksQueries.listAllEnriched());
+  } catch (err) {
+    console.error("Failed to list enriched hotel module locks:", err);
+    res.status(500).json({ error: "Failed to load hotel module access" });
+  }
 });
 
 app.get("/api/hotel/module-locks/me", ensureAuth, async (req, res) => {
-  res.json(await hotelModuleLocksQueries.getMyLocks(req.user.email));
+  // Walk up to the tenant owner so child users (cashier, branch-admin)
+  // inherit the lock set against their admin's email. For the admin
+  // themselves, ownerEmail === email and the IN-list collapses.
+  const ownerEmail =
+    req.user.ownerEmail || req.user.rootOwnerEmail || req.user.email;
+  try {
+    res.json(await hotelModuleLocksQueries.getMyLocks(req.user.email, ownerEmail));
+  } catch (err) {
+    console.error("Failed to read own hotel module locks:", err);
+    res.status(500).json({ error: "Failed to read module lock state" });
+  }
 });
 
 app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req, res) => {
@@ -737,18 +755,25 @@ app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req
   if (typeof locked !== "boolean") {
     return res.status(400).json({ error: "Body must be {locked: true|false}" });
   }
-  const updated = await hotelModuleLocksQueries.setLock(
-    decodeURIComponent(customerEmail),
-    module,
-    locked,
-    req.user.email
-  );
-  if (!updated) {
-    return res.status(400).json({
-      error: "Invalid module (must be lodging|dining|liveBill) or missing customerEmail",
+  try {
+    const updated = await hotelModuleLocksQueries.setLock(
+      decodeURIComponent(customerEmail),
+      module,
+      locked,
+      req.user.email
+    );
+    if (!updated) {
+      return res.status(400).json({
+        error: "Invalid module (must be lodging|dining|liveBill) or missing customerEmail",
+      });
+    }
+    res.json(updated);
+  } catch (err) {
+    console.error("Failed to set hotel module lock:", err);
+    res.status(500).json({
+      error: `Failed to ${locked ? "lock" : "unlock"} ${module}: ${err.message || "database error"}`,
     });
   }
-  res.json(updated);
 });
 
 // === Hotel bookings (per-store, per-room-or-table) =========================
