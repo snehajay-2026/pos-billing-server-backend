@@ -322,6 +322,16 @@ const loginLimiter = buildRateLimiter({
   errorMessage: "Too many login attempts.",
 });
 
+// Dev escape hatch: in non-production environments the login limiter
+// is bypassed so a forgotten password / Caps-Lock typos don't lock
+// out the developer mid-session for 15 minutes. Set
+// `LOGIN_RATE_LIMIT_DISABLED=1` to force-disable even if NODE_ENV
+// is production (e.g. staging). The real limiter still protects
+// production unless this env-var is set explicitly.
+const isLoginLimiterDisabled =
+  process.env.LOGIN_RATE_LIMIT_DISABLED === "1" || process.env.NODE_ENV !== "production";
+const loginLimiterNoop = (_req, _res, next) => next();
+
 const registerLimiter = buildRateLimiter({
   store: registerAttempts,
   windowMs: 60 * 60 * 1000,
@@ -340,7 +350,7 @@ const resetRequestLimiter = buildRateLimiter({
   errorMessage: "Too many password reset requests.",
 });
 
-app.post("/api/login", loginLimiter, async (req, res) => {
+app.post("/api/login", isLoginLimiterDisabled ? loginLimiterNoop : loginLimiter, async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
