@@ -88,16 +88,16 @@ const isAllowedOrigin = (origin) => {
   }
 };
 
-const hotelResourceMap = {
-  "checkout-history": "checkoutHistory",
-  "dining-bills": "diningBills",
-  tables: "tables",
-  waiting: "waiting",
-  "dining-waiting": "diningWaiting",
-  "lodging-waiting": "lodgingWaiting",
-};
-
-const resolveHotelResource = (resource) => hotelResourceMap[resource] || resource;
+// hotel/slice routing helpers — removed.
+//
+// Earlier this map converted kebab-case resource names from the URL
+// ("dining-waiting") to camelCase ("diningWaiting") before they were
+// passed to hotelQueries.sliceToColumn. sliceToColumn's map only
+// recognises kebab-case keys, so the camelCase lookup returned null
+// and every authenticated /api/hotel/:resource call (apart from the
+// explicit /api/hotel/dining-bills and /api/hotel/checkout-history
+// routes registered earlier) returned 404. The catch-all now passes
+// req.params.resource directly through to sliceToColumn.
 
 // In-memory password-reset token store. Same volatility as `sessions` —
 // tokens die on server restart. Production migration target: a DB row with
@@ -1144,7 +1144,10 @@ app.get("/api/hotel/rooms", ensureAuth, async (req, res) => {
 });
 
 app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
-  const resource = resolveHotelResource(req.params.resource);
+  // The kebab-case resource name from the URL (e.g. "dining-waiting") is
+  // the exact key hotelQueries.sliceToColumn expects — pass it through
+  // unchanged.
+  const resource = req.params.resource;
   // module-locks has its own explicit routes above; if it slips through
   // here (e.g. /api/hotel/module-locks/extra), return 404 cleanly rather
   // than hitting hotelQueries.sliceToColumn with a non-mapped name.
@@ -1158,7 +1161,7 @@ app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
 });
 
 app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
-  const resource = resolveHotelResource(req.params.resource);
+  const resource = req.params.resource;
   if (req.params.resource === "module-locks") {
     return res.status(404).json({ error: "Not found" });
   }
@@ -1176,7 +1179,7 @@ app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
 });
 
 app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
-  const resource = resolveHotelResource(req.params.resource);
+  const resource = req.params.resource;
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
   }
