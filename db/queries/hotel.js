@@ -103,6 +103,40 @@ const removeItem = async (slice, id) => {
   return result[0].affectedRows > 0;
 };
 
+// updateItem: merge a patch into the slice row whose id matches. Uses
+// JSON_SEARCH to locate the matching element and JSON_SET to write the
+// patch fields. Returns the merged row (or null when not found). This is
+// the canonical way the frontend's `hotelService.updateTable(id, patch)`
+// call mirrors dining-table status changes (Book / Clear) into the legacy
+// `hotel_state.tables` JSON column. The actual source of truth for
+// booking state is `hotel_bookings`; this write keeps the legacy mirror
+// in sync so anything reading the JSON column sees the latest status.
+const updateItem = async (slice, id, patch) => {
+  const col = sliceToColumn(slice);
+  if (!col) return null;
+  const result = await query(
+    `UPDATE hotel_state
+     SET ${col} = JSON_SET(
+       COALESCE(${col}, JSON_ARRAY()),
+       JSON_UNQUOTE(JSON_SEARCH(${col}, 'one', ?)),
+       CAST(? AS JSON)
+     ),
+     updated_at = NOW(3)
+     WHERE id = 1
+       AND JSON_SEARCH(${col}, 'one', ?) IS NOT NULL`,
+    [String(id), JSON.stringify(patch || {}), String(id)]
+  );
+  if (!result[0] || result[0].affectedRows === 0) return null;
+  // Re-read to return the merged row. Keeps the response shape stable
+  // so callers can re-render without an extra GET round-trip.
+  const rows = await query(
+    `SELECT ${col} FROM hotel_state WHERE id = 1 LIMIT 1`
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  const sliceRows = rows[0][0][col] || [];
+  return sliceRows.find((row) => String(row.id) === String(id)) || null;
+};
+
 // clearSlice: empty a sub-resource (used by /api/hotel/checkout-history DELETE).
 const clearSlice = async (slice) => {
   const col = sliceToColumn(slice);
@@ -132,6 +166,7 @@ module.exports = {
   pushItem,
   replaceSlice,
   removeItem,
+  updateItem,
   clearSlice,
   sliceToColumn,
 };

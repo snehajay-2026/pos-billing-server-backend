@@ -867,6 +867,14 @@ app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
 
 // Free-up endpoint: marks a (kind, refId) booking as checked_out without
 // needing the database id. Used when the cashier finishes a table or room.
+//
+// Broadcasts via `buildBookingEvent` so the SSE payload carries a full
+// `booking` object — the SSE listener in HotelBilling.jsx keys off
+// `event.booking` to merge dining-table status into local state. The
+// previous `buildHotelEvent` shape sent `data: { kind, refId }` only,
+// which the listener silently dropped, breaking cross-device realtime
+// for Clear Table. We re-read the now-checked-out row so the broadcast
+// carries the merged guest / customer-mobile / check-in fields too.
 app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => {
   const { kind, refId, storeType, storeId } = req.body || {};
   if (!kind || !refId) {
@@ -877,13 +885,12 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
     storeId: storeId || req.query.storeId,
   };
   await hotelBookingsQueries.clearByRefId(kind, refId, scope);
+  const updatedBooking = await hotelBookingsQueries.findByRefId(kind, refId, scope);
   realtimeHub.publish(
-    realtimeHub.buildHotelEvent({
+    realtimeHub.buildBookingEvent({
       action: "checked_out",
-      kind: "booking",
-      storeType: scope.storeType,
-      storeId: scope.storeId,
-      data: { kind, refId },
+      booking: updatedBooking,
+      scope,
     })
   );
   res.json({ ok: true });
@@ -1176,6 +1183,25 @@ app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
 app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
   await hotelQueries.clearSlice("checkout-history");
   res.json({ ok: true });
+});
+
+// PUT /api/hotel/tables/:tableId — mirrors dining-table status changes
+// (Book / Clear) into the legacy `hotel_state.tables` JSON column.
+// Registered BEFORE the `/api/hotel/:resource/:id` catch-alls so the
+// `tables` resource gets this row-targeted handler. The actual booking
+// state of record lives in `hotel_bookings` (see POST /api/hotel/bookings
+// + SSE booking events); this endpoint keeps the legacy mirror in sync
+// so anything reading the JSON column sees the latest status. A 404 is
+// returned when the table id isn't in the slice, which the frontend
+// treats as a no-op (the table was deleted or never added).
+app.put("/api/hotel/tables/:tableId", ensureAuth, async (req, res) => {
+  const { tableId } = req.params;
+  const payload = req.body || {};
+  const merged = await hotelQueries.updateItem("tables", tableId, payload);
+  if (!merged) {
+    return res.status(404).json({ error: "Table not found" });
+  }
+  res.json(merged);
 });
 
 app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
