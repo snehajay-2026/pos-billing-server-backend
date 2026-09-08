@@ -822,6 +822,19 @@ app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
     },
     scope
   );
+  // Server-side visibility: log every dining/lodging upsert with its
+  // resolved scope so future mismatch reports (e.g. "booking shows
+  // locally but not after reload") can be traced to the exact
+  // (storeType, storeId) pair that hit the DB. Cheap, irreversible.
+  if (process.env.NODE_ENV !== "test") {
+    console.log(
+      `[hotel/bookings] ${body.kind}=${booking && booking.id} ` +
+        `refId=${booking && (booking.tableId || booking.roomId)} ` +
+        `status=${booking && booking.status} ` +
+        `scope=${scope.storeType}:${scope.storeId} ` +
+        `by=${req.user && req.user.email}`
+    );
+  }
   // Broadcast to every connected client in the same store scope so the
   // booking appears instantly on every other device.
   realtimeHub.publish(
