@@ -181,12 +181,14 @@ CREATE TABLE IF NOT EXISTS `invoices` (
   `_store_type` VARCHAR(64) NULL,
   `_store_id` VARCHAR(128) NULL,
   `_user_email` VARCHAR(255) NULL,
+  `shift_id` BIGINT UNSIGNED NULL,
   `created_at` DATETIME(3) NULL,
   `updated_at` DATETIME(3) NULL,
   UNIQUE KEY `uq_invoices_invoice_no` (`invoice_no`),
   KEY `idx_invoices_store` (`_store_type`, `_store_id`),
   KEY `idx_invoices_user` (`_user_email`),
-  KEY `idx_invoices_date` (`date`)
+  KEY `idx_invoices_date` (`date`),
+  KEY `idx_invoices_shift` (`shift_id`, `_store_type`, `_store_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -262,9 +264,15 @@ CREATE TABLE IF NOT EXISTS `shifts` (
   `user_id` BIGINT UNSIGNED NOT NULL,
   `store_type` VARCHAR(64) NULL,
   `store_id` VARCHAR(128) NULL,
+  `branch_name` VARCHAR(128) NULL,
+  `customer_email` VARCHAR(255) NULL,
+  `opened_by_user_id` BIGINT UNSIGNED NULL,
+  `closed_by_user_id` BIGINT UNSIGNED NULL,
   `status` ENUM('open', 'closed') NOT NULL DEFAULT 'open',
   `opening_float` DECIMAL(12, 2) NOT NULL DEFAULT 0,
   `closing_cash` DECIMAL(12, 2) NULL,
+  `total_sales` DECIMAL(14, 2) NULL,
+  `variance` DECIMAL(12, 2) NULL,
   `expected_cash` DECIMAL(12, 2) NULL,
   `notes` TEXT NULL,
   `close_notes` TEXT NULL,

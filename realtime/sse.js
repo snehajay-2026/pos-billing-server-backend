@@ -21,6 +21,7 @@ const buildDefaultChannel = ({ storeType, storeId }) => {
       hub.CHANNELS.HOTEL(storeType, storeId),
       hub.CHANNELS.INVOICE(storeType, storeId),
       hub.CHANNELS.STOCK(storeType, storeId),
+      hub.CHANNELS.SHIFT(storeType, storeId),
       hub.CHANNELS.ALL(),
     ];
   }

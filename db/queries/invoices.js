@@ -23,39 +23,53 @@ const { query, withTransaction } = require("../pool");
 // schema once at module load and flip this flag so the INSERT/SELECT
 // builders below can branch without paying the probe cost on every save.
 //
-// We swallow the error: a missing column is the expected pre-migration
-// state, and any *other* schema error will surface on the very next query.
+// `invoices.shift_id` is added in migration `012_shift_invoice_link.sql`
+// to link invoices to the cashier's drawer session — without it the
+// shift summary endpoint can't aggregate bill count / sales / GST /
+// discount. Same probe pattern.
 let hasGeneratedAtColumn = false;
+let hasShiftIdColumn = false;
 (async () => {
   try {
     const [rows] = await query(
-      `SELECT COUNT(*) AS n
-         FROM information_schema.columns
-         WHERE table_schema = DATABASE()
-           AND table_name = 'invoices'
-           AND column_name = 'generated_at'`
+      `SELECT
+         SUM(CASE WHEN column_name = 'generated_at' THEN 1 ELSE 0 END) AS n_gen,
+         SUM(CASE WHEN column_name = 'shift_id'     THEN 1 ELSE 0 END) AS n_shift
+       FROM information_schema.columns
+       WHERE table_schema = DATABASE() AND table_name = 'invoices'`
     );
-    hasGeneratedAtColumn = Number((rows && rows[0] && rows[0].n) || 0) > 0;
+    hasGeneratedAtColumn = Number((rows && rows[0] && rows[0].n_gen) || 0) > 0;
+    hasShiftIdColumn = Number((rows && rows[0] && rows[0].n_shift) || 0) > 0;
   } catch (e) {
     hasGeneratedAtColumn = false;
+    hasShiftIdColumn = false;
   }
 })();
 
 // Single source of truth for the SELECT column list. Includes the
-// optional `generated_at` column when the migration has been applied;
-// falls back to the pre-migration column set otherwise so a backend
-// running against an un-migrated DB doesn't 500 every invoice fetch.
-// Implemented as a getter so the value reflects the post-probe flag
-// (the probe is async and resolves after this module finishes
+// optional `generated_at` + `shift_id` columns when the migrations have
+// been applied; falls back to the pre-migration column set otherwise so
+// a backend running against an un-migrated DB doesn't 500 every invoice
+// fetch. Implemented as a getter so the value reflects the post-probe
+// flag (the probe is async and resolves after this module finishes
 // evaluating — so a `const` snapshot taken at module-load time would
-// permanently pin `hasGeneratedAtColumn = false`).
-const COLUMNS_NO_GEN =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, updated_at";
+// permanently pin the flags to false).
+const COLUMNS_BASE =
+  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email";
+const COLUMNS_NO_OPTIONAL =
+  `${COLUMNS_BASE}, created_at, updated_at`;
 const COLUMNS_WITH_GEN =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at, generated_at, updated_at";
+  `${COLUMNS_BASE}, created_at, generated_at, updated_at`;
+const COLUMNS_WITH_SHIFT =
+  `${COLUMNS_BASE}, created_at, shift_id, updated_at`;
+const COLUMNS_WITH_BOTH =
+  `${COLUMNS_BASE}, created_at, generated_at, shift_id, updated_at`;
 const COLUMNS = {
   get withGen() {
-    return hasGeneratedAtColumn ? COLUMNS_WITH_GEN : COLUMNS_NO_GEN;
+    if (hasGeneratedAtColumn && hasShiftIdColumn) return COLUMNS_WITH_BOTH;
+    if (hasGeneratedAtColumn) return COLUMNS_WITH_GEN;
+    if (hasShiftIdColumn) return COLUMNS_WITH_SHIFT;
+    return COLUMNS_NO_OPTIONAL;
   },
 };
 
@@ -104,6 +118,7 @@ const rowToInvoice = (row) => {
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
+    shiftId: row.shift_id != null ? Number(row.shift_id) : row.shift_id,
     createdAt: row.created_at || null,
     generatedAt: row.generated_at || null,
     updatedAt: row.updated_at || null,
@@ -261,20 +276,39 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
     //    insert while still preferring the live cashier moment when
     //    present.
     const generatedAtSql = invoice.generatedAt ? toMysqlDatetime(invoice.generatedAt) : null;
-    // Build the INSERT shape dynamically so the `generated_at` column
-    // is only referenced when the migration has run. The probe at
-    // module-load sets `hasGeneratedAtColumn`; by the time the first
-    // invoice save request lands, the flag has settled, so this branch
-    // picks the right shape for every save after that.
+    // Resolve the optional shift linkage (added in migration 012). The
+    // route handler decides whether to stamp a shift — here we accept
+    // a `shiftId` arg carried on the resolved scope, or fall back to
+    // `invoice.shiftId` if a caller passed it explicitly on the body
+    // (kept for back-compat / direct test scripts).
+    const shiftId =
+      (invoice.shiftId != null ? Number(invoice.shiftId) : null) ||
+      (invoice.shift_id != null ? Number(invoice.shift_id) : null) ||
+      (scope.shiftId != null ? Number(scope.shiftId) : null) ||
+      null;
+    // Build the INSERT shape dynamically so the optional columns are
+    // only referenced when the migrations have run. The probe at
+    // module-load sets `hasGeneratedAtColumn` + `hasShiftIdColumn`; by
+    // the time the first invoice save request lands, the flags have
+    // settled, so this branch picks the right shape for every save.
     const insertBaseCols =
       "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
     const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
-    const insertCols = hasGeneratedAtColumn
-      ? `${insertBaseCols}, generated_at, updated_at`
-      : `${insertBaseCols}, updated_at`;
-    const insertVals = hasGeneratedAtColumn
-      ? `${insertBaseVals}, COALESCE(?, NOW(3)), NOW(3)`
-      : `${insertBaseVals}, NOW(3)`;
+    let insertCols = insertBaseCols;
+    let insertVals = insertBaseVals;
+    const tail = [];
+    if (hasGeneratedAtColumn) {
+      insertCols += ", generated_at";
+      insertVals += ", COALESCE(?, NOW(3))";
+      tail.push(generatedAtSql);
+    }
+    if (hasShiftIdColumn) {
+      insertCols += ", shift_id";
+      insertVals += ", ?";
+      tail.push(shiftId);
+    }
+    insertCols += ", updated_at";
+    insertVals += ", NOW(3)";
     const insertParams = [
       id,
       invoice.invoiceNo,
@@ -292,8 +326,8 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
       scope.storeType || null,
       scope.storeId || null,
       scope.email || null,
+      ...tail,
     ];
-    if (hasGeneratedAtColumn) insertParams.push(generatedAtSql);
     await conn.query(
       `INSERT INTO invoices (${insertCols}) VALUES (${insertVals})`,
       insertParams
@@ -335,17 +369,31 @@ const create = async (item, scope, conn) => {
   const { customerName, customerMobile } = resolveCustomer(item);
   const generatedAtSql = item.generatedAt ? toMysqlDatetime(item.generatedAt) : null;
   // Same dynamic INSERT shape as `createWithStockDecrement` — the
-  // `generated_at` column is only referenced when the
-  // `009_invoice_generated_at.sql` migration has run.
+  // optional `generated_at` + `shift_id` columns are only referenced
+  // when the migrations have run.
+  const shiftId =
+    (item.shiftId != null ? Number(item.shiftId) : null) ||
+    (item.shift_id != null ? Number(item.shift_id) : null) ||
+    (scope.shiftId != null ? Number(scope.shiftId) : null) ||
+    null;
   const insertBaseCols =
     "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
   const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
-  const insertCols = hasGeneratedAtColumn
-    ? `${insertBaseCols}, generated_at, updated_at`
-    : `${insertBaseCols}, updated_at`;
-  const insertVals = hasGeneratedAtColumn
-    ? `${insertBaseVals}, COALESCE(?, NOW(3)), NOW(3)`
-    : `${insertBaseVals}, NOW(3)`;
+  let insertCols = insertBaseCols;
+  let insertVals = insertBaseVals;
+  const tail = [];
+  if (hasGeneratedAtColumn) {
+    insertCols += ", generated_at";
+    insertVals += ", COALESCE(?, NOW(3))";
+    tail.push(generatedAtSql);
+  }
+  if (hasShiftIdColumn) {
+    insertCols += ", shift_id";
+    insertVals += ", ?";
+    tail.push(shiftId);
+  }
+  insertCols += ", updated_at";
+  insertVals += ", NOW(3)";
   const insertParams = [
     id,
     item.invoiceNo || item.invoice_no || null,
@@ -363,8 +411,8 @@ const create = async (item, scope, conn) => {
     scope.storeType || null,
     scope.storeId || null,
     scope.email || null,
+    ...tail,
   ];
-  if (hasGeneratedAtColumn) insertParams.push(generatedAtSql);
   const exec = conn
     ? (sql, params) => conn.query(sql, params)
     : query;
@@ -407,16 +455,27 @@ const update = async (id, patch) => {
     "invoice_no", "date", "items", "sub_total", "gst_total", "grand_total",
     "discount", "discount_breakdown", "payment_mode", "billed_by", "status",
     "customer_name", "customer_mobile",
+    // `shift_id` was added in migration 012. The probe at module-load
+    // tells us whether the column actually exists; if not, the SET
+    // builder below silently skips it (no error — pre-migration DBs
+    // keep working). On a migrated DB the route handlers can re-link
+    // an invoice to a shift by passing `shiftId` in the patch.
+    "shift_id",
   ];
   const camelToSnake = {
     invoiceNo: "invoice_no", subTotal: "sub_total", gstTotal: "gst_total",
     grandTotal: "grand_total", discountBreakdown: "discount_breakdown",
     paymentMode: "payment_mode", billedBy: "billed_by",
     customerName: "customer_name", customerMobile: "customer_mobile",
+    shiftId: "shift_id",
   };
   const sets = [];
   const params = [];
   for (const k of allowed) {
+    // `shift_id` is in the allow-list so callers can link an invoice
+    // to a shift post-hoc, but we only emit it when the column
+    // actually exists on this DB (migration 012 may not have run yet).
+    if (k === "shift_id" && !hasShiftIdColumn) continue;
     const camel = Object.keys(camelToSnake).find((c) => camelToSnake[c] === k) || k;
     if (!Object.prototype.hasOwnProperty.call(patch, camel)) continue;
     let v = patch[camel];

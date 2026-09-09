@@ -1463,13 +1463,30 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
   }
 
   const scope = getRequestScope(req);
+  // Stamp the cashier's active shift (if any) onto the scope so the
+  // invoices INSERT links the row to the drawer's session. A Cashier
+  // without an open shift gets a 409 — the frontend's useShiftGate
+  // hook prevents the form from opening in this state, but we re-check
+  // here in case someone POSTs directly.
+  const { scope: effectiveScope, activeShift, cashShiftRequired } =
+    await attachShiftContext(req, scope);
+  if (cashShiftRequired && !activeShift) {
+    const storeType = scope.storeType || req.user?.storeType || "";
+    return res.status(409).json({
+      error:
+        "No active shift for this cashier/store — open a shift before generating invoices",
+      code: "NO_ACTIVE_SHIFT",
+      storeType,
+    });
+  }
+
   // Hotel Store discount validation — mirrors `validateDiscount` on the
   // checkout route but additionally enforces `source` (manual | coupon)
   // and re-resolves coupons from the DB so client-claimed values
   // cannot be spoofed. Runs before any write — failing here is cheap.
   let resolvedCoupon = null;
   try {
-    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, scope);
+    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, effectiveScope);
   } catch (err) {
     const status = err.status || 400;
     return res.status(status).json({ error: err.message });
@@ -1493,11 +1510,24 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
       }
       // The invoices module accepts a `conn` so it joins the same
       // transaction; otherwise we'd have a race where the invoice
-      // commits but the usage bump hadn't yet.
-      return invoicesQueries.create(invoice, scope, conn);
+      // commits but the usage bump hadn't yet. Pass `effectiveScope`
+      // (which carries `shiftId`) so the row is linked to the cashier's
+      // active shift.
+      return invoicesQueries.create(invoice, effectiveScope, conn);
     });
     if (!saved) {
       return res.status(500).json({ error: "Failed to persist invoice" });
+    }
+    // Refresh the shift's cached total_sales so the close-shift dialog
+    // and ShiftsPage reflect the new bill without waiting for a manual
+    // recompute. Safe no-op if this invoice isn't linked to a shift.
+    if (saved.shiftId) {
+      try {
+        await shiftsQueries.recalculateTotals(saved.shiftId);
+      } catch (e) {
+        // The invoice is already saved — totals can be refreshed on
+        // demand from /api/shifts/:id/summary. Don't fail the request.
+      }
     }
     // Broadcast the new invoice so other cashiers / admins in the same
     // store see live sales activity without polling. Stock events are not
@@ -1506,7 +1536,7 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
       realtimeHub.buildInvoiceEvent({
         action: "created",
         invoice: saved,
-        scope,
+        scope: effectiveScope,
       })
     );
     return res.status(201).json(saved);
@@ -1695,12 +1725,28 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
   }
 
   const scope = getRequestScope(req);
+  // Stamp the cashier's active shift (if any) onto the scope so the
+  // invoices INSERT links the row to the drawer's session. A Cashier
+  // without an open shift gets a 409 — the frontend's useShiftGate
+  // hook prevents the form from opening in this state, but we re-check
+  // here in case someone POSTs directly.
+  const { scope: effectiveScope, activeShift, cashShiftRequired } =
+    await attachShiftContext(req, scope);
+  if (cashShiftRequired && !activeShift) {
+    const storeType = scope.storeType || req.user?.storeType || "";
+    return res.status(409).json({
+      error:
+        "No active shift for this cashier/store — open a shift before generating invoices",
+      code: "NO_ACTIVE_SHIFT",
+      storeType,
+    });
+  }
   // Hotel coupon validation (min_subtotal + server-authoritative value
   // resolution). Returns the resolved coupon row so we can bump its
   // usage_count inside the same transaction as the invoice INSERT.
   let resolvedCoupon = null;
   try {
-    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, scope);
+    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, effectiveScope);
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
@@ -1726,21 +1772,33 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
       // createWithStockDecrement takes a 4th arg `conn` (added in the
       // same change set) so it joins the same transaction. Without it
       // the stock decrement + invoice INSERT would commit on a separate
-      // pool connection and could partially apply.
+      // pool connection and could partially apply. Pass
+      // `effectiveScope` so the saved invoice carries shift_id.
       return invoicesQueries.createWithStockDecrement(
         invoice,
         resolveCheckoutQuantity,
-        scope,
+        effectiveScope,
         conn
       );
     });
+    // Refresh the shift's cached total_sales so the close-shift dialog
+    // and ShiftsPage reflect the new bill without waiting for a manual
+    // recompute. Safe no-op if this invoice isn't linked to a shift.
+    if (result?.invoice?.shiftId) {
+      try {
+        await shiftsQueries.recalculateTotals(result.invoice.shiftId);
+      } catch (e) {
+        // The invoice is already saved — totals can be refreshed on
+        // demand from /api/shifts/:id/summary. Don't fail the request.
+      }
+    }
     // Broadcast the new invoice so other cashiers / admins in the same
     // store see live sales activity without polling.
     realtimeHub.publish(
       realtimeHub.buildInvoiceEvent({
         action: "created",
         invoice: result,
-        scope,
+        scope: effectiveScope,
       })
     );
     // After the decrement, peek at each line item and emit a stock event
@@ -1834,6 +1892,81 @@ const requireCashVertical = (req, res) => {
   return scope;
 };
 
+// attachShiftContext: for the cashier's invoice save flows, look up the
+// caller's currently-open shift (if any) and stamp `scope.shiftId` so the
+// invoices query inserts `shift_id` automatically. We never auto-close an
+// expired shift here — that lives in the frontend's useShiftGate hook which
+// prompts the cashier to close + reopen. For non-cashier roles
+// (STORE_ADMIN/ADMIN/SUPER_OWNER) we deliberately do NOT force a shift
+// link — admin users generate invoices without owning a drawer session.
+//
+// Returns { scope, activeShift, cashShiftRequired } so the caller can
+// decide what to do when a cashier's sale hits no active shift.
+const attachShiftContext = async (req, scope) => {
+  // Vertical check mirrors requireCashVertical() — no shift linkage for
+  // non-cash verticals (system, hospital, school, …).
+  const storeType = scope.storeType || req.user?.storeType || "";
+  if (!storeType || !CASH_VERTICALS.has(String(storeType).toLowerCase())) {
+    return { scope: { ...scope, shiftId: null }, activeShift: null, cashShiftRequired: false };
+  }
+  // Admin / Super-Owner roles don't own a drawer — let them save without
+  // a shift link so reconciliation/import flows keep working. The shift
+  // summary endpoint will simply not count their invoices.
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role !== "CASHIER") {
+    return { scope: { ...scope, shiftId: null }, activeShift: null, cashShiftRequired: false };
+  }
+  const activeShift = await shiftsQueries.getActiveForUser(
+    req.user.id,
+    scope.storeType,
+    scope.storeId
+  );
+  return {
+    scope: { ...scope, shiftId: activeShift ? Number(activeShift.id) : null },
+    activeShift: activeShift || null,
+    cashShiftRequired: true,
+  };
+};
+
+// authorizeShiftAccess: per-row scope check for /api/shifts/:shiftId
+// routes. Cashiers can only see/operate on their own shifts. Admins
+// see all shifts in the same store; Super-Owner sees everything.
+//
+// Returns the loaded shift on success, or null if the row didn't exist.
+// Sends the 403/404 directly and returns a sentinel `{ forbidden: true }`
+// so the caller can early-return.
+const authorizeShiftAccess = async (req, res, shiftId) => {
+  const shift = await shiftsQueries.findById(shiftId);
+  if (!shift) {
+    res.status(404).json({ error: "Shift not found" });
+    return { shift: null, forbidden: false };
+  }
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role === "SUPER_OWNER") {
+    return { shift, forbidden: false };
+  }
+  if (role === "ADMIN" || role === "STORE_ADMIN" || role === "BRANCH_ADMIN") {
+    // Admin scope: same storeType+storeId as the shift.
+    const scope = getRequestScope(req);
+    const userStoreType = scope.storeType || req.user?.storeType || "";
+    const userStoreId = scope.storeId || req.user?.storeId || "";
+    if (
+      String(shift.storeType || "") !== String(userStoreType) ||
+      String(shift.storeId || "") !== String(userStoreId)
+    ) {
+      res.status(403).json({ error: "Forbidden — shift belongs to another store" });
+      return { shift: null, forbidden: true };
+    }
+    return { shift, forbidden: false };
+  }
+  // Cashier (or any other role) — strictly own shift.
+  if (Number(shift.userId) !== Number(req.user?.id)) {
+    res.status(403).json({ error: "Forbidden — shift belongs to another user" });
+    return { shift: null, forbidden: true };
+  }
+  return { shift, forbidden: false };
+};
+
 app.get("/api/shifts/active", ensureAuth, async (req, res) => {
   const scope = requireCashVertical(req, res);
   if (!scope) return;
@@ -1859,7 +1992,15 @@ app.get("/api/shifts", ensureAuth, async (req, res) => {
 app.post("/api/shifts", ensureAuth, async (req, res) => {
   const scope = requireCashVertical(req, res);
   if (!scope) return;
-  const { openingFloat = 0, notes = null } = req.body || {};
+  // Branch label / customer email are cashier-typed metadata that the
+  // OpenShiftDialog collects; we persist them on the shifts row so the
+  // ShiftsPage list can render them without a join.
+  const {
+    openingFloat = 0,
+    notes = null,
+    branchName = null,
+    customerEmail = null,
+  } = req.body || {};
   // Refuse to open a second shift for the same user/store while one is open.
   const existing = await shiftsQueries.getActiveForUser(
     req.user.id,
@@ -1876,52 +2017,129 @@ app.post("/api/shifts", ensureAuth, async (req, res) => {
     userId: req.user.id,
     storeType: scope.storeType,
     storeId: scope.storeId,
+    branchName,
+    customerEmail,
     openingFloat,
     notes,
   });
+  // Broadcast so other cashiers / admins in this store see the new
+  // active-shift state on their next /api/shifts/active poll and
+  // their useShiftGate hook re-renders the banner.
+  realtimeHub.publish(
+    realtimeHub.buildShiftEvent({
+      action: "opened",
+      shift,
+      storeType: scope.storeType,
+      storeId: scope.storeId,
+      userId: req.user.id,
+    })
+  );
   res.json(shift);
 });
 
 app.get("/api/shifts/:shiftId", ensureAuth, async (req, res) => {
-  const shift = await shiftsQueries.findById(req.params.shiftId);
-  if (!shift) return res.status(404).json({ error: "Shift not found" });
-  res.json(shift);
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return; // authorizeShiftAccess already responded
+  if (!auth.shift) return; // 404 already sent
+  res.json(auth.shift);
 });
 
 app.post("/api/shifts/:shiftId/close", ensureAuth, async (req, res) => {
+  // Ownership + store-scope check before any close work happens. Cashiers
+  // can only close their own shift; admins close for cashiers in their
+  // store. SUPER_OWNER is unrestricted.
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return;
+  if (!auth.shift) return;
   const { closingCash = 0, closeNotes = null } = req.body || {};
-  const shift = await shiftsQueries.close(req.params.shiftId, { closingCash, closeNotes });
+  const shift = await shiftsQueries.close(req.params.shiftId, {
+    closingCash,
+    closeNotes,
+    // Stamp whoever actually clicked close — useful when an admin closes
+    // someone else's shift for handover. Falls back to shift owner in the
+    // query layer.
+    closedByUserId: req.user?.id,
+  });
   if (!shift) return res.status(404).json({ error: "Shift not found" });
+  realtimeHub.publish(
+    realtimeHub.buildShiftEvent({
+      action: "closed",
+      shift,
+      storeType: shift.storeType,
+      storeId: shift.storeId,
+      userId: req.user?.id,
+    })
+  );
   res.json(shift);
 });
 
 app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return;
+  if (!auth.shift) return;
   const movements = await shiftsQueries.listCashMovements(req.params.shiftId);
   res.json(movements);
 });
 
 app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
-  const { type, amount, reason = null } = req.body || {};
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return;
+  if (!auth.shift) return;
+  // Refuse once the shift has been closed — no point logging movements
+  // on a frozen drawer. The query layer also enforces this, but checking
+  // here gives the client a cleaner 409 message.
+  if (auth.shift.status !== "open") {
+    return res.status(409).json({
+      error: "Cannot record movement on a closed shift",
+      shiftId: auth.shift.id,
+      status: auth.shift.status,
+    });
+  }
+  const { type, amount, reason = null, refType = null, refId = null } = req.body || {};
   const updated = await shiftsQueries.addCashMovement(req.params.shiftId, {
     type,
     amount,
     reason,
+    refType,
+    refId,
   });
   if (!updated) {
     return res
       .status(404)
       .json({ error: "Shift not found or already closed, or invalid movement type" });
   }
+  realtimeHub.publish(
+    realtimeHub.buildShiftEvent({
+      action: "movement",
+      shift: auth.shift,
+      movement: {
+        type,
+        amount: Number(amount) || 0,
+        reason,
+        refType,
+        refId,
+      },
+      storeType: auth.shift.storeType,
+      storeId: auth.shift.storeId,
+      userId: req.user?.id,
+    })
+  );
   res.json(updated);
 });
 
 app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, async (req, res) => {
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return;
+  if (!auth.shift) return;
   const recon = await shiftsQueries.reconciliation(req.params.shiftId);
   if (!recon) return res.status(404).json({ error: "Shift not found" });
   res.json(recon);
 });
 
 app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
+  const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
+  if (auth.forbidden) return;
+  if (!auth.shift) return;
   const summary = await shiftsQueries.summary(req.params.shiftId);
   if (!summary) return res.status(404).json({ error: "Shift not found" });
   res.json(summary);

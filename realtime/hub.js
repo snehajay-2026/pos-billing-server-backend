@@ -23,6 +23,7 @@ const CHANNELS = {
   HOTEL: (storeType, storeId) => `hotel:${storeType || ""}:${storeId || ""}`,
   INVOICE: (storeType, storeId) => `invoices:${storeType || ""}:${storeId || ""}`,
   STOCK: (storeType, storeId) => `stock:${storeType || ""}:${storeId || ""}`,
+  SHIFT: (storeType, storeId) => `shifts:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -121,6 +122,22 @@ const buildStockEvent = ({ action, movement, product, crossedLowStock, scope }) 
   crossedLowStock: !!crossedLowStock,
 });
 
+// Build an event for a shift lifecycle change (open / close / cash
+// movement). Fans out on the shifts channel so other cashiers / admins
+// in the same store see who has an open drawer, who just closed, and
+// when money moves without polling. The `useShiftGate` hook on each
+// page re-fetches /api/shifts/active whenever it sees one of these.
+const buildShiftEvent = ({ action, shift, movement, storeType, storeId, userId }) => ({
+  kind: "shift",
+  action, // 'opened' | 'closed' | 'movement'
+  storeType: storeType || null,
+  storeId: storeId || null,
+  channel: CHANNELS.SHIFT(storeType, storeId),
+  shift: shift || null,
+  movement: movement || null,
+  userId: userId != null ? Number(userId) : userId,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
@@ -129,5 +146,6 @@ module.exports = {
   buildHotelEvent,
   buildInvoiceEvent,
   buildStockEvent,
+  buildShiftEvent,
   recentEvents,
 };
