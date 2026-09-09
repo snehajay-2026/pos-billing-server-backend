@@ -38,14 +38,18 @@ const SHIFT_COLUMNS =
 // closedBy user info to the frontend's ShiftsPage. Adding these as a
 // separate constant lets the inner reconciliation queries keep the
 // narrow column set (the JOIN doesn't change the SUM/GROUP BY math).
-const SHIFT_COLUMNS_WITH_USERS =
-  `${SHIFT_COLUMNS},
-   opener.email AS opened_by_email,
-   opener.role  AS opened_by_role,
-   opener.name  AS opened_by_name,
-   closer.email AS closed_by_email,
-   closer.role  AS closed_by_role,
-   closer.name  AS closed_by_name`;
+//
+// NOTE: the JOIN has been disabled — `LEFT JOIN users opener / closer`
+// against the TiDB Cloud `users` table was hanging every read at the
+// exact 30s curl/Express timeout in production (Sep 2026). The likely
+// cause is TiDB's planner picking a degenerate hash-join path for the
+// nullable FK columns on `shifts.opened_by_user_id` / `closed_by_user_id`.
+// The frontend's ShiftsPage still has a graceful `—` fallback for the
+// missing opener/closer info (rowToShift returns null for openedByUser
+// / closedByUser when the JOIN columns are absent). Re-introducing the
+// JOIN — or a per-shift user lookup — is tracked as a follow-up once
+// the TiDB hang root-cause is identified.
+const SHIFT_COLUMNS_WITH_USERS = SHIFT_COLUMNS;
 
 const CASH_MOVE_COLUMNS =
   "id, shift_id, type, amount, reason, ref_type, ref_id, created_at";
@@ -143,8 +147,6 @@ const getActiveForUser = async (userId, storeType, storeId) => {
   const rows = await query(
     `SELECT ${SHIFT_COLUMNS_WITH_USERS}
        FROM shifts
-       LEFT JOIN users opener ON opener.id = shifts.opened_by_user_id
-       LEFT JOIN users closer ON closer.id = shifts.closed_by_user_id
        WHERE ${conds.join(" AND ")}
        ORDER BY opened_at DESC, id DESC LIMIT 1`,
     params
@@ -157,8 +159,6 @@ const findById = async (id) => {
   const rows = await query(
     `SELECT ${SHIFT_COLUMNS_WITH_USERS}
        FROM shifts
-       LEFT JOIN users opener ON opener.id = shifts.opened_by_user_id
-       LEFT JOIN users closer ON closer.id = shifts.closed_by_user_id
        WHERE shifts.id = ? LIMIT 1`,
     [id]
   );
@@ -192,8 +192,6 @@ const list = async (scope, filters = {}) => {
   const rows = await query(
     `SELECT ${SHIFT_COLUMNS_WITH_USERS}
        FROM shifts
-       LEFT JOIN users opener ON opener.id = shifts.opened_by_user_id
-       LEFT JOIN users closer ON closer.id = shifts.closed_by_user_id
        ${where}
        ORDER BY opened_at DESC, id DESC
        LIMIT 200`,
