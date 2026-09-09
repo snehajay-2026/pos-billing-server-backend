@@ -51,8 +51,19 @@ const SHIFT_COLUMNS =
 // the TiDB hang root-cause is identified.
 const SHIFT_COLUMNS_WITH_USERS = SHIFT_COLUMNS;
 
+// NOTE: `ref_type` / `ref_id` were planned but never migrated into the
+// `shift_cash_movements` table (see migration 012 — it adds shift_id,
+// branch_name, customer_email, etc. but not these two). Selecting them
+// against the live schema throws "Unknown column 'ref_type' in 'field
+// list'", which Express propagates as a 30s connection timeout on the
+// `GET /api/shifts/:id/summary` and `GET/POST /api/shifts/:id/cash-movements`
+// routes (TiDB Cloud, Sep 2026). Selecting only the columns that actually
+// exist; the route handlers already pass `refType` / `refId` as INSERT
+// params but those INSERTs would also fail today — they are accepted by
+// the route layer but the row never lands. Restoring those columns is a
+// separate migration, tracked as a follow-up.
 const CASH_MOVE_COLUMNS =
-  "id, shift_id, type, amount, reason, ref_type, ref_id, created_at";
+  "id, shift_id, type, amount, reason, created_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -448,9 +459,9 @@ const addCashMovement = async (
   if (shift.status !== "open") return null;
   await query(
     `INSERT INTO shift_cash_movements
-       (shift_id, type, amount, reason, ref_type, ref_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, NOW(3))`,
-    [shiftId, type, Number(amount) || 0, reason, refType, refId]
+       (shift_id, type, amount, reason, created_at)
+     VALUES (?, ?, ?, ?, NOW(3))`,
+    [shiftId, type, Number(amount) || 0, reason]
   );
   return reconciliation(shiftId);
 };
