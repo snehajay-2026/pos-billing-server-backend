@@ -247,7 +247,16 @@ const reconciliation = async (shiftId) => {
 // method is read from invoices.payment_mode (the legacy `cash` | `upi`
 // | `card` | `other` taxonomy). Returns zeros when no invoices are
 // linked yet so the close-shift dialog can render before any sale.
-
+//
+// NOTE: the previous version of this query used
+//   SUM(i.sub_total) OVER (PARTITION BY i.invoice_no)
+// inside a CASE branch to resolve the percent-discount base. That's
+// equivalent to referencing `i.sub_total` directly (it's a column on the
+// same row being aggregated), but the window-function-in-aggregate
+// pattern trips TiDB Cloud's planner into a degenerate path that hangs
+// for the full query timeout (Sep 2026, observed against production
+// Render backend). Same root cause as the `LEFT JOIN users` hang
+// removed from findById earlier. Replaced with a plain column ref.
 const invoiceTotals = async (shiftId) => {
   if (!shiftId) {
     return {
@@ -269,7 +278,7 @@ const invoiceTotals = async (shiftId) => {
            WHEN JSON_TYPE(discount) = 'OBJECT' AND JSON_EXTRACT(discount, '$.value') IS NOT NULL THEN
              CASE JSON_EXTRACT(discount, '$.type')
                WHEN 'flat'    THEN CAST(JSON_EXTRACT(discount, '$.value') AS DECIMAL(12,2))
-               WHEN 'percent' THEN CAST(COALESCE(SUM(i.sub_total) OVER (PARTITION BY i.invoice_no), 0) * JSON_EXTRACT(discount, '$.value') / 100 AS DECIMAL(12,2))
+               WHEN 'percent' THEN CAST(COALESCE(i.sub_total, 0) * JSON_EXTRACT(discount, '$.value') / 100 AS DECIMAL(12,2))
                ELSE 0
              END
            ELSE 0
