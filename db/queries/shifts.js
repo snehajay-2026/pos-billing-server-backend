@@ -469,9 +469,25 @@ const addCashMovement = async (
 // close: stamp closing_cash + expected_cash + total_sales + variance +
 // closed_at + closed_by_user_id, flip status. Idempotent — closing
 // twice is a no-op (returns the shift as-is).
+//
+// enforceZeroVariance (default true): when true, refuse the close with a
+// structured error { code: "CASH_VARIANCE_NOT_ZERO", variance, expected,
+// closingCash } if the counted cash doesn't match the expected physical
+// cash to the cent. This is the server-authoritative side of the
+// "difference must be ₹0" rule. The route layer turns the thrown error
+// into a 409 response. Admin-script callers (rare, e.g. fixing a stuck
+// shift during reconciliation) can pass enforceZeroVariance=false to
+// bypass the check explicitly. Without this check, a cashier could
+// POST closingCash=100 when expected=10000 and the row would silently
+// land with variance=-9900, hiding a real reconciliation gap.
 const close = async (
   shiftId,
-  { closingCash, closeNotes = null, closedByUserId = null }
+  {
+    closingCash,
+    closeNotes = null,
+    closedByUserId = null,
+    enforceZeroVariance = true,
+  }
 ) => {
   if (!shiftId) return null;
   return withTransaction(async (conn) => {
@@ -494,7 +510,24 @@ const close = async (
 
     const recon = await reconciliation(shiftId);
     const expected = recon ? recon.expectedCash : shift.openingFloat;
-    const variance = Number(closingCash || 0) - Number(expected || 0);
+    const counted = Number(closingCash || 0);
+    const variance = +(counted - Number(expected || 0)).toFixed(2);
+
+    // Server-side zero-difference rule.
+    if (enforceZeroVariance && Math.abs(variance) > 0.005) {
+      const err = new Error(
+        `Shift cannot be closed — cash difference must be ₹0.00 ` +
+          `(counted ${counted.toFixed(2)} vs expected ${Number(expected || 0).toFixed(
+            2
+          )}, variance ${variance.toFixed(2)}).`
+      );
+      err.code = "CASH_VARIANCE_NOT_ZERO";
+      err.variance = variance;
+      err.expected = Number(expected || 0);
+      err.closingCash = counted;
+      err.status = 409;
+      throw err;
+    }
 
     await conn.query(
       `UPDATE shifts

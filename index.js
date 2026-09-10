@@ -1909,22 +1909,29 @@ const attachShiftContext = async (req, scope) => {
   if (!storeType || !CASH_VERTICALS.has(String(storeType).toLowerCase())) {
     return { scope: { ...scope, shiftId: null }, activeShift: null, cashShiftRequired: false };
   }
-  // Admin / Super-Owner roles don't own a drawer — let them save without
-  // a shift link so reconciliation/import flows keep working. The shift
-  // summary endpoint will simply not count their invoices.
+  // Resolve the caller's open shift (if any) for both cashier and
+  // manager/admin roles. Cashier-equivalents get the existing 409
+  // behavior (no shift → no save) below; managers / super-owners who
+  // happen to have an open shift get their invoices linked to it so
+  // their sales appear in "Sales during this shift" / ShiftsPage /
+  // reconciliation. When no shift is open for a manager, the invoice
+  // still saves (cashShiftRequired=false) — the row is left unlinked
+  // rather than blocked. This preserves the existing business rule
+  // (managers don't own a drawer) while fixing the "my UPI/Card sales
+  // don't show up in the summary" gap.
   const role = String(req.user?.role || "").toUpperCase();
-  if (role !== "CASHIER") {
-    return { scope: { ...scope, shiftId: null }, activeShift: null, cashShiftRequired: false };
-  }
   const activeShift = await shiftsQueries.getActiveForUser(
     req.user.id,
     scope.storeType,
     scope.storeId
   );
+  const isCashier = role === "CASHIER";
   return {
     scope: { ...scope, shiftId: activeShift ? Number(activeShift.id) : null },
     activeShift: activeShift || null,
-    cashShiftRequired: true,
+    // Only the cashier's role requires a shift for the save to proceed.
+    // Managers / super-owners can save without one (existing rule).
+    cashShiftRequired: isCashier,
   };
 };
 
@@ -2052,25 +2059,42 @@ app.post("/api/shifts/:shiftId/close", ensureAuth, async (req, res) => {
   if (auth.forbidden) return;
   if (!auth.shift) return;
   const { closingCash = 0, closeNotes = null } = req.body || {};
-  const shift = await shiftsQueries.close(req.params.shiftId, {
-    closingCash,
-    closeNotes,
-    // Stamp whoever actually clicked close — useful when an admin closes
-    // someone else's shift for handover. Falls back to shift owner in the
-    // query layer.
-    closedByUserId: req.user?.id,
-  });
-  if (!shift) return res.status(404).json({ error: "Shift not found" });
-  realtimeHub.publish(
-    realtimeHub.buildShiftEvent({
-      action: "closed",
-      shift,
-      storeType: shift.storeType,
-      storeId: shift.storeId,
-      userId: req.user?.id,
-    })
-  );
-  res.json(shift);
+  try {
+    const shift = await shiftsQueries.close(req.params.shiftId, {
+      closingCash,
+      closeNotes,
+      // Stamp whoever actually clicked close — useful when an admin closes
+      // someone else's shift for handover. Falls back to shift owner in the
+      // query layer.
+      closedByUserId: req.user?.id,
+    });
+    if (!shift) return res.status(404).json({ error: "Shift not found" });
+    realtimeHub.publish(
+      realtimeHub.buildShiftEvent({
+        action: "closed",
+        shift,
+        storeType: shift.storeType,
+        storeId: shift.storeId,
+        userId: req.user?.id,
+      })
+    );
+    res.json(shift);
+  } catch (err) {
+    // Map the zero-variance enforcement error to a structured 409 so the
+    // frontend can show the cashier exactly why the close was rejected
+    // (counted vs expected + variance). Anything else falls through to
+    // the global error handler.
+    if (err && err.code === "CASH_VARIANCE_NOT_ZERO") {
+      return res.status(409).json({
+        error: err.message,
+        code: "CASH_VARIANCE_NOT_ZERO",
+        variance: err.variance,
+        expected: err.expected,
+        closingCash: err.closingCash,
+      });
+    }
+    throw err;
+  }
 });
 
 app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
