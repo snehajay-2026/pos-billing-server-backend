@@ -357,6 +357,20 @@ const summary = async (shiftId) => {
   //   anything else with type='cash_out' → outflows.paidOut (fallback)
   // Future rows can use richer types via the addCashMovement route once
   // the schema is widened.
+  //
+  // NOTE: `cash_in` rows whose reason is 'sale' (auto-posted by the
+  // frontend's recordCashSaleForShift after each Cash invoice) are
+  // INTENTIONALLY excluded from the paidIn bucket below. They ARE
+  // included in the `cash_in` sum used by `reconciliation()` (see
+  // below) — that's the physical cash that went into the drawer, and
+  // it's correct for the expected-cash math. But the `paidIn` bucket
+  // is what the close dialog displays under "Paid in / pickups", and
+  // the same ₹X is ALREADY displayed under "Cash collection" (it's
+  // the same Cash invoice). Showing it a second time under "Paid in /
+  // pickups" looks like double-counting to the cashier, even though
+  // the math only uses one of the two values. Excluding the sale
+  // reason from this bucket removes the visual duplication without
+  // touching the expected-cash calculation.
   let refund = 0;
   let drop = 0;
   let paidOut = 0;
@@ -371,7 +385,10 @@ const summary = async (shiftId) => {
       else paidOut += Math.abs(m.amount);
     } else {
       if (reason.startsWith("pickup")) pickup += Math.abs(m.amount);
-      else paidIn += Math.abs(m.amount);
+      else if (reason.startsWith("sale")) {
+        // Auto-posted sale cash_in: tracked via invoices.shift_id
+        // aggregation, do not surface a second time in the dialog.
+      } else paidIn += Math.abs(m.amount);
     }
   }
 
