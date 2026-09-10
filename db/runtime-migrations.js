@@ -55,6 +55,23 @@ const MIGRATIONS = [
     column: "image_mime",
     ddl: "ALTER TABLE `products` ADD COLUMN `image_mime` VARCHAR(64) NULL AFTER `image_path`",
   },
+  {
+    // Bug #2 fix: ref_type/ref_id were planned but never migrated onto
+    // shift_cash_movements. Without them, the cashier's "Record drop"
+    // button could fire twice and double-count into expected_cash. After
+    // these columns land, the route layer can upsert on
+    // (shift_id, ref_type, ref_id) to make the endpoint idempotent.
+    name: "shift_cash_movements.ref_type",
+    table: "shift_cash_movements",
+    column: "ref_type",
+    ddl: "ALTER TABLE `shift_cash_movements` ADD COLUMN `ref_type` VARCHAR(32) NULL AFTER `reason`",
+  },
+  {
+    name: "shift_cash_movements.ref_id",
+    table: "shift_cash_movements",
+    column: "ref_id",
+    ddl: "ALTER TABLE `shift_cash_movements` ADD COLUMN `ref_id` VARCHAR(128) NULL AFTER `ref_type`",
+  },
 ];
 
 const isDenied = (err) => {
@@ -112,6 +129,46 @@ const runRuntimeMigrations = async () => {
         console.warn(`[runtime-migrations] ${m.name} failed: ${err.message}`);
       }
     }
+  }
+
+  // Bug #2 fix: a UNIQUE index on (shift_id, ref_type, ref_id) makes
+  // POST /api/shifts/:id/cash-movements idempotent at the DB level.
+  // Without it, two clicks on "Record drop" for the same invoice would
+  // produce two rows and double-count into expected_cash. The query
+  // layer uses INSERT … ON DUPLICATE KEY UPDATE so even rows that
+  // arrive before the index exists don't break; once the index is
+  // present the second insert becomes a no-op.
+  const uniqueIdxName = "uq_shift_cash_movements_ref";
+  try {
+    const [idxRows] = await pool.query(
+      `SELECT INDEX_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
+      [process.env.DB_NAME, "shift_cash_movements", uniqueIdxName]
+    );
+    if (!idxRows || idxRows.length === 0) {
+      try {
+        await query(
+          "ALTER TABLE `shift_cash_movements` ADD UNIQUE KEY `uq_shift_cash_movements_ref` (`shift_id`, `ref_type`, `ref_id`)"
+        );
+        applied += 1;
+        console.log(`[runtime-migrations] applied: ${uniqueIdxName}`);
+      } catch (err) {
+        if (isDenied(err)) {
+          denied += 1;
+          console.warn(
+            `[runtime-migrations] ${uniqueIdxName} skipped — app user lacks ALTER rights. ` +
+              `Run this once as a DBA:\n  ALTER TABLE shift_cash_movements ` +
+              `ADD UNIQUE KEY uq_shift_cash_movements_ref (shift_id, ref_type, ref_id);`
+          );
+        } else {
+          console.warn(`[runtime-migrations] ${uniqueIdxName} failed: ${err.message}`);
+        }
+      }
+    } else {
+      skipped += 1;
+    }
+  } catch (err) {
+    console.warn(`[runtime-migrations] ${uniqueIdxName} inspection failed: ${err.message}`);
   }
 
   return { applied, skipped, denied };

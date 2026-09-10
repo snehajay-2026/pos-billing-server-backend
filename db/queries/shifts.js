@@ -51,19 +51,13 @@ const SHIFT_COLUMNS =
 // the TiDB hang root-cause is identified.
 const SHIFT_COLUMNS_WITH_USERS = SHIFT_COLUMNS;
 
-// NOTE: `ref_type` / `ref_id` were planned but never migrated into the
-// `shift_cash_movements` table (see migration 012 — it adds shift_id,
-// branch_name, customer_email, etc. but not these two). Selecting them
-// against the live schema throws "Unknown column 'ref_type' in 'field
-// list'", which Express propagates as a 30s connection timeout on the
-// `GET /api/shifts/:id/summary` and `GET/POST /api/shifts/:id/cash-movements`
-// routes (TiDB Cloud, Sep 2026). Selecting only the columns that actually
-// exist; the route handlers already pass `refType` / `refId` as INSERT
-// params but those INSERTs would also fail today — they are accepted by
-// the route layer but the row never lands. Restoring those columns is a
-// separate migration, tracked as a follow-up.
+// NOTE: `ref_type` / `ref_id` were added by migration 013
+// (013_cash_movement_unique_ref.sql). The columns are nullable, so
+// pre-existing manual rows (refund:/drop:/paid_out:) keep working.
+// A UNIQUE INDEX on (shift_id, ref_type, ref_id) makes the cash-
+// movement endpoint idempotent at the DB level — see addCashMovement.
 const CASH_MOVE_COLUMNS =
-  "id, shift_id, type, amount, reason, created_at";
+  "id, shift_id, type, amount, reason, ref_type, ref_id, created_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -465,6 +459,19 @@ const open = async ({
 
 // addCashMovement: append a cash_in/cash_out to a shift. Refuses if the
 // shift is already closed (no point logging movements on a closed shift).
+//
+// Idempotency (Bug #2 fix): when the caller supplies a non-null
+// (refType, refId) pair — e.g. `refType:'invoice', refId:'AUDIT-…'` for
+// an auto-posted sale, or `refType:'drop', refId:'drop-12345'` for a
+// cash-drop receipt — the insert becomes an UPSERT keyed on the
+// UNIQUE index (shift_id, ref_type, ref_id) added by migration 013.
+// A repeat click on "Record drop" returns the existing row instead of
+// duplicating it, so expected_cash never double-counts.
+//
+// Manual entries without a ref (refund:/drop:/paid_out: prefixes from
+// the cashier's free-text reason) deliberately skip the upsert path:
+// each call appends a fresh row, which matches the cashier's mental
+// model of "every refund is a new entry".
 const addCashMovement = async (
   shiftId,
   { type, amount, reason = null, refType = null, refId = null }
@@ -474,12 +481,29 @@ const addCashMovement = async (
   const shift = await findById(shiftId);
   if (!shift) return null;
   if (shift.status !== "open") return null;
-  await query(
-    `INSERT INTO shift_cash_movements
-       (shift_id, type, amount, reason, created_at)
-     VALUES (?, ?, ?, ?, NOW(3))`,
-    [shiftId, type, Number(amount) || 0, reason]
-  );
+  const hasRef = refType != null && refId != null && String(refType) !== "" && String(refId) !== "";
+  if (hasRef) {
+    // ON DUPLICATE KEY UPDATE keeps the original row's amount/reason
+    // (refId is the cashier's idempotency key — if the second call
+    // passes a different amount, the cashier's intent is "the same
+    // drop, leave it alone", not "update silently"). Returning the
+    // pre-existing row prevents the route handler from broadcasting a
+    // duplicate realtime event.
+    await query(
+      `INSERT INTO shift_cash_movements
+         (shift_id, type, amount, reason, ref_type, ref_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NOW(3))
+       ON DUPLICATE KEY UPDATE id = id`,
+      [shiftId, type, Number(amount) || 0, reason, String(refType), String(refId)]
+    );
+  } else {
+    await query(
+      `INSERT INTO shift_cash_movements
+         (shift_id, type, amount, reason, created_at)
+       VALUES (?, ?, ?, ?, NOW(3))`,
+      [shiftId, type, Number(amount) || 0, reason]
+    );
+  }
   return reconciliation(shiftId);
 };
 
@@ -507,14 +531,22 @@ const close = async (
   }
 ) => {
   if (!shiftId) return null;
-  return withTransaction(async (conn) => {
+  // Perform the UPDATE inside the transaction, then read the canonical
+  // row AFTER commit on a fresh pool connection. Reading inside the
+  // withTransaction callback (the previous shape) executed against a
+  // different pool connection that still saw the pre-commit snapshot
+  // on TiDB Cloud — the response then reported `status:'open'` /
+  // `closingCash:null` even though the row was correctly flipped in
+  // the DB. Doing the read after COMMIT is identical to the JSON-path
+  // legacy and matches the contract the frontend relies on.
+  const result = await withTransaction(async (conn) => {
     const [rows] = await conn.query(
       `SELECT ${SHIFT_COLUMNS} FROM shifts WHERE id = ? LIMIT 1`,
       [shiftId]
     );
-    if (!rows || rows.length === 0) return null;
+    if (!rows || rows.length === 0) return { skip: true };
     const shift = rowToShift(rows[0]);
-    if (shift.status === "closed") return shift;
+    if (shift.status === "closed") return { skip: true, shiftId };
 
     // Refresh totals from invoices in the same transaction so a sale
     // that landed milliseconds before close isn't lost.
@@ -525,8 +557,26 @@ const close = async (
     );
     const totalSales = Number((totalsRows && totalsRows[0] && totalsRows[0].total_sales) || 0);
 
-    const recon = await reconciliation(shiftId);
-    const expected = recon ? recon.expectedCash : shift.openingFloat;
+    // Compute the expected physical cash on the SAME transaction
+    // connection. We previously called `reconciliation(shiftId)` which
+    // uses `query()` (a fresh pool connection) — same read-after-write
+    // pitfall as the close response. Inline the SUM on `conn` instead.
+    const [reconRows] = await conn.query(
+      `SELECT
+         COALESCE(s.opening_float, 0) AS opening_float,
+         COALESCE(SUM(CASE WHEN m.type = 'cash_in'  THEN m.amount ELSE 0 END), 0) AS cash_in,
+         COALESCE(SUM(CASE WHEN m.type = 'cash_out' THEN m.amount ELSE 0 END), 0) AS cash_out
+       FROM shifts s
+       LEFT JOIN shift_cash_movements m ON m.shift_id = s.id
+       WHERE s.id = ?
+       GROUP BY s.id, s.opening_float`,
+      [shiftId]
+    );
+    const recon = reconRows && reconRows[0] ? reconRows[0] : null;
+    const openingFloat = recon ? Number(recon.opening_float || 0) : Number(shift.openingFloat || 0);
+    const cashIn = recon ? Number(recon.cash_in || 0) : 0;
+    const cashOut = recon ? Number(recon.cash_out || 0) : 0;
+    const expected = openingFloat + cashIn - cashOut;
     const counted = Number(closingCash || 0);
     const variance = +(counted - Number(expected || 0)).toFixed(2);
 
@@ -567,8 +617,14 @@ const close = async (
         shiftId,
       ]
     );
-    return findById(shiftId);
+    return { skip: false, shiftId };
   });
+  if (!result || result.skip) {
+    return result && result.shiftId ? findById(result.shiftId) : null;
+  }
+  // Post-commit read. findById uses a fresh pool connection — by now
+  // the COMMIT has landed and TiDB Cloud returns the canonical row.
+  return findById(result.shiftId);
 };
 
 module.exports = {

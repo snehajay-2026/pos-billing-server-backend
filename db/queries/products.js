@@ -59,9 +59,16 @@ const rowToProduct = (row) => {
 // Build a WHERE clause + params from a scope + query filter object.
 // scope = { storeType, storeId, email } from getRequestScope(req).
 // The behavior matches filterByQuery() in index.js for the JSON path:
-//   - storeType, storeId, email are scope filters
+//   - storeType, storeId are scope filters
+//   - email is OPTIONAL (Bug #3 fix): a cashier in the same store
+//     should be able to see the admin's products. The previous version
+//     appended `_user_email = ?` unconditionally, which made the
+//     cashier's GET /api/products return an empty list whenever the
+//     store's catalog had been seeded by the admin. Reads now ignore
+//     email; ownership of writes is still gated on email via
+//     findByIdScoped below.
 //   - other keys (e.g. ?barcode=...) match against the row's column
-const buildWhere = (scope, query_) => {
+const buildWhere = (scope, query_, { includeEmail = false } = {}) => {
   const conds = [];
   const params = [];
   if (scope.storeType) {
@@ -72,7 +79,7 @@ const buildWhere = (scope, query_) => {
     conds.push("_store_id = ?");
     params.push(scope.storeId);
   }
-  if (scope.email) {
+  if (includeEmail && scope.email) {
     conds.push("_user_email = ?");
     params.push(scope.email);
   }
@@ -90,7 +97,9 @@ const buildWhere = (scope, query_) => {
 };
 
 const list = async (scope, query_ = {}) => {
-  const where = buildWhere(scope, query_);
+  // Bug #3 fix: do NOT include `_user_email` in the WHERE clause.
+  // The store catalog is shared across all staff in the same store.
+  const where = buildWhere(scope, query_, { includeEmail: false });
   const rows = await query(
     `SELECT ${COLUMNS} FROM products ${where.sql} ORDER BY created_at DESC, id DESC`,
     where.params
@@ -108,10 +117,12 @@ const findById = async (id) => {
 };
 
 // findByIdScoped: same as findById but enforces store-scope. Used by
-// PUT/DELETE to make sure a user can't update a product outside their
-// store by guessing an id.
+// PUT/DELETE/image routes to make sure a user can't update or attach an
+// image to a product outside their store by guessing an id. This MUST
+// keep the email filter (includeEmail:true) so a cashier can't mutate
+// the admin's products, while still seeing them in `list` (Bug #3 fix).
 const findByIdScoped = async (id, scope) => {
-  const where = buildWhere(scope, {});
+  const where = buildWhere(scope, {}, { includeEmail: true });
   const rows = await query(
     `SELECT ${COLUMNS} FROM products WHERE id = ? ${where.sql ? "AND " + where.sql.replace(/^WHERE /, "") : ""} LIMIT 1`,
     [id, ...where.params]

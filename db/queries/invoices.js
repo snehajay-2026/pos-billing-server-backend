@@ -333,12 +333,20 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
       insertParams
     );
 
-    return { id, updatedStock };
-  }).then(async () => {
-    // After commit, re-read the invoice so the caller gets the full row
-    // including server-generated timestamps.
-    const saved = await findByInvoiceNo(invoice.invoiceNo);
-    return { invoice: saved, updatedStock };
+    // Read the just-inserted row on the SAME transaction connection
+    // before COMMIT. The previous shape returned `{id, updatedStock}`
+    // and called `findByInvoiceNo(invoiceNo)` from a fresh pool
+    // connection AFTER commit; against TiDB Cloud that read raced the
+    // commit and returned `null`, so the response body
+    // `{invoice:null, updatedStock:[…]}` made it look like the save
+    // failed. Mirroring the `create()` shape below: SELECT on `conn`
+    // inside the txn, return the full row, and commit.
+    const [savedRows] = await conn.query(
+      `SELECT ${COLUMNS.withGen} FROM invoices WHERE id = ? LIMIT 1`,
+      [id]
+    );
+    const savedInvoice = savedRows && savedRows[0] ? rowToInvoice(savedRows[0]) : null;
+    return { invoice: savedInvoice, updatedStock };
   });
 };
 
