@@ -3,6 +3,13 @@
 // qty_kg, status, type, token, invoice_no, subtotal, gst_total,
 // express_surcharge, total, express, expected_return, notes, _store_type,
 // _store_id, _user_email, created_at, updated_at.
+//
+// Bug fix (mirrors products.js Bug #3): the previous buildWhere appended
+// `_user_email = ?` unconditionally. That made a cashier's GET /api/orders
+// (with type=service) return only their own orders, hiding admin-scheduled
+// ones in the same store. Reads now ignore email via includeEmail:false;
+// ownership of writes is still gated on email through findByIdScoped
+// (includeEmail:true).
 
 const { query } = require("../pool");
 
@@ -44,12 +51,12 @@ const rowToOrder = (row) => {
   };
 };
 
-const buildWhere = (scope, query_) => {
+const buildWhere = (scope, query_, { includeEmail = false } = {}) => {
   const conds = [];
   const params = [];
   if (scope.storeType) { conds.push("_store_type = ?"); params.push(scope.storeType); }
   if (scope.storeId)   { conds.push("_store_id = ?");   params.push(scope.storeId); }
-  if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
+  if (includeEmail && scope.email) { conds.push("_user_email = ?"); params.push(scope.email); }
   for (const [k, v] of Object.entries(query_ || {})) {
     if (v === undefined || v === "") continue;
     if (k === "storeType" || k === "storeId" || k === "email") continue;
@@ -60,7 +67,10 @@ const buildWhere = (scope, query_) => {
 };
 
 const list = async (scope, query_ = {}) => {
-  const where = buildWhere(scope, query_);
+  // Bug fix: do NOT include `_user_email` in the WHERE clause. The orders
+  // list is shared across all staff in the same store, so a cashier must
+  // see orders scheduled by an admin (and vice versa).
+  const where = buildWhere(scope, query_, { includeEmail: false });
   const rows = await query(
     `SELECT ${COLUMNS} FROM orders ${where.sql} ORDER BY created_at DESC, id DESC`,
     where.params
@@ -77,8 +87,11 @@ const findById = async (id) => {
   return rowToOrder(rows[0][0]);
 };
 
+// findByIdScoped: keeps the email filter (includeEmail:true) so a cashier
+// can't mutate the admin's orders by guessing an id. Reads via list()
+// stay scope-wide.
 const findByIdScoped = async (id, scope) => {
-  const where = buildWhere(scope, {});
+  const where = buildWhere(scope, {}, { includeEmail: true });
   const rows = await query(
     `SELECT ${COLUMNS} FROM orders WHERE id = ? ${where.sql ? "AND " + where.sql.replace(/^WHERE /, "") : ""} LIMIT 1`,
     [id, ...where.params]
