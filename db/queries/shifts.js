@@ -269,7 +269,7 @@ const invoiceTotals = async (shiftId) => {
       sales: 0,
       discount: 0,
       gst: 0,
-      collections: { cash: 0, upi: 0, card: 0, other: 0 },
+      collections: { cash: 0, upi: 0, card: 0, bankTransfer: 0, other: 0 },
     };
   }
   const rows = await query(
@@ -292,7 +292,18 @@ const invoiceTotals = async (shiftId) => {
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'cash' THEN grand_total ELSE 0 END), 0) AS cash,
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'upi'  THEN grand_total ELSE 0 END), 0) AS upi,
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'card' THEN grand_total ELSE 0 END), 0) AS card,
-       COALESCE(SUM(CASE WHEN LOWER(payment_mode) NOT IN ('cash','upi','card') OR payment_mode IS NULL THEN grand_total ELSE 0 END), 0) AS other
+       /* F3: Bank Transfer was silently falling into the 'other' bucket
+          before this commit. ServiceBilling.jsx records
+          paymentMode: "Bank Transfer" on the invoice row, but the
+          aggregator's LOWER() comparison didn't match "bank transfer"
+          against any of cash/upi/card, so the entire bank-transfer
+          total vanished into the generic 'other' bucket alongside
+          anything truly unrecognised. Splitting it into its own bucket
+          lets the close-shift dialog (and any future reports) display
+          the bank total explicitly, while 'other' remains the genuine
+          fallback for unrecognised payment modes. */
+       COALESCE(SUM(CASE WHEN LOWER(payment_mode) IN ('bank transfer','banktransfer','bank-transfer') THEN grand_total ELSE 0 END), 0) AS bank_transfer,
+       COALESCE(SUM(CASE WHEN LOWER(payment_mode) NOT IN ('cash','upi','card','bank transfer','banktransfer','bank-transfer') OR payment_mode IS NULL THEN grand_total ELSE 0 END), 0) AS other
      FROM invoices i
      WHERE shift_id = ?`,
     [shiftId]
@@ -307,6 +318,7 @@ const invoiceTotals = async (shiftId) => {
       cash: Number(r.cash || 0),
       upi: Number(r.upi || 0),
       card: Number(r.card || 0),
+      bankTransfer: Number(r.bank_transfer || 0),
       other: Number(r.other || 0),
     },
   };
@@ -324,7 +336,7 @@ const invoiceTotals = async (shiftId) => {
 //     movements: [...],          // shift_cash_movements rows
 //     reconciliation: { openingFloat, cashIn, cashOut, expectedCash },
 //     totals: { bills, sales, gst, discount },
-//     sales: { cash, upi, card, other },  // derived from invoices.payment_mode
+//     sales: { cash, upi, card, bankTransfer, other }, // derived from invoices.payment_mode (F3)
 //     outflows: { refund, drop, paidOut }, // derived from movements
 //     collections: { paidIn, pickup },     // derived from movements
 //     opening: { float },
