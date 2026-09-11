@@ -2654,6 +2654,280 @@ app.delete("/api/products/:id/image", ensureAuth, async (req, res) => {
   return res.json(updated);
 });
 
+// F1: Service order → invoice conversion.
+//
+// Generates an invoice from a scheduled service order. The orders.service
+// column is a free-text name (no FK), so the route resolves the catalog
+// row by name to read its rate + GST, then assembles a single-line
+// invoice mirroring the shape ServiceBilling.jsx sends to POST /api/invoices.
+// The invoice INSERT and the order's status='invoiced' + invoice_no=<new>
+// UPDATE happen in the same MySQL transaction so a half-saved invoice
+// never leaves the order unlinked.
+//
+// Why a dedicated route instead of POST /api/invoices + PUT /api/orders:
+//   - The two-step dance above races the F4 shift-link behaviour: a
+//     cashier could POST the invoice, lose the connection, and end up
+//     with a bill but no order linkage. Wrapping both writes in one
+//     transaction closes the window.
+//   - attachShiftContext + the cash-vertical 409 guard already need to
+//     run here too. Reusing them keeps the gate behaviour identical to
+//     the manual billing flow.
+//   - The order → invoice mapping is a one-way edge in the schema
+//     (orders.invoice_no is the only link), so the route must stamp
+//     the back-pointer in the same write that creates the bill.
+//
+// Idempotency: a re-POST on the same order returns 409
+// { error, code: "ORDER_ALREADY_INVOICED" } rather than spawning a
+// second invoice.
+app.post("/api/orders/:id/invoice", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const body = req.body || {};
+  const paymentMode = String(body.paymentMode || "").trim();
+  const ALLOWED_PAYMENT = ["Cash", "UPI", "Card", "Bank Transfer"];
+  if (!ALLOWED_PAYMENT.includes(paymentMode)) {
+    return res.status(400).json({
+      error: `paymentMode must be one of ${ALLOWED_PAYMENT.join(", ")}`,
+    });
+  }
+  const gstRateRaw = body.gstRate;
+  const gstRateNum =
+    gstRateRaw == null || gstRateRaw === "" ? null : Number(gstRateRaw);
+  if (
+    gstRateRaw != null &&
+    gstRateRaw !== "" &&
+    !Number.isFinite(gstRateNum)
+  ) {
+    return res.status(400).json({ error: "gstRate must be numeric" });
+  }
+  const remarks = body.remarks != null ? String(body.remarks) : "";
+  // Override fields on the invoice if provided. The order carries
+  // customer (name) + phone; everything else is optional override or
+  // blank. The cashier cannot change `customer` here — the order
+  // already pinned the customer identity at intake; the invoice
+  // mirrors it.
+  const customerEmail =
+    body.customerEmail != null ? String(body.customerEmail) : "";
+  const customerAddress =
+    body.customerAddress != null ? String(body.customerAddress) : "";
+  const customerGst =
+    body.customerGst != null ? String(body.customerGst) : "";
+  const customerState =
+    body.customerState != null ? String(body.customerState) : "";
+
+  const scope = getRequestScope(req);
+  // 1. Resolve the order inside scope. findByIdScoped enforces the email
+  // filter so a cashier in store A can't invoice an order in store B
+  // even if they guess the id.
+  const order = await ordersQueries.findByIdScoped(Number(id), scope);
+  if (!order) {
+    return res.status(404).json({ error: "Service order not found" });
+  }
+  if (order.invoiceNo) {
+    return res.status(409).json({
+      error:
+        "This order already has an invoice — open the existing bill instead of creating a duplicate.",
+      code: "ORDER_ALREADY_INVOICED",
+      invoiceNo: order.invoiceNo,
+    });
+  }
+  if (order.type && order.type !== "service") {
+    // Defensive: orders.type is free-text. Only `service` orders are
+    // eligible for this conversion. Laundry orders use a different
+    // billing path.
+    return res.status(400).json({
+      error: `Order type '${order.type}' is not billable via this endpoint. Use the laundry or service billing page.`,
+    });
+  }
+
+  // 2. Resolve the service catalog row by name. If the named service has
+  // been deleted from the catalog since the order was scheduled, fall
+  // back to rate=0 / gst=0 — a zero-rate line is preferable to a 409
+  // that strands an already-completed job.
+  const catalog = order.service
+    ? await servicesQueries.findByName(order.service, scope)
+    : null;
+  const rate = Number(catalog?.rate) || 0;
+  const hours = Number(order.hours) || Number(catalog?.hours) || 0;
+  const lineTotal = +(rate * hours).toFixed(2);
+  const gstPct =
+    gstRateNum != null
+      ? gstRateNum
+      : (catalog?.gst != null ? Number(catalog.gst) : 0);
+  const gstTotal = +((lineTotal * gstPct) / 100).toFixed(2);
+  const grandTotal = +(lineTotal + gstTotal).toFixed(2);
+
+  // 3. Cash-shift gate. Mirrors POST /api/invoices: a cashier in a
+  // cash-vertical store must have an open shift. attachShiftContext
+  // stamps the scope.shiftId so the invoice row links to the drawer.
+  const { scope: effectiveScope, activeShift, cashShiftRequired } =
+    await attachShiftContext(req, scope);
+  if (cashShiftRequired && !activeShift) {
+    const storeType = scope.storeType || req.user?.storeType || "";
+    return res.status(409).json({
+      error:
+        "No active shift for this cashier/store — open a shift before generating invoices",
+      code: "NO_ACTIVE_SHIFT",
+      storeType,
+    });
+  }
+
+  // 4. Build the invoice body in the exact shape ServiceBilling.jsx
+  // sends (camelCase top-level keys; customer meta mirrored into
+  // items[0].meta so the public share link still renders it).
+  const year = new Date().getFullYear();
+  const invoiceNo = `SI${year}-${String(Date.now()).slice(-6)}`;
+  const generatedAt = new Date().toISOString();
+  const lineItem = {
+    id: catalog?.id != null ? Number(catalog.id) : null,
+    name: order.service || "Service",
+    price: rate,
+    hours,
+    gst: gstPct,
+    lineTotal,
+    itemType: "service",
+    meta: {
+      customerPhone: order.phone || "",
+      customerMobile: order.phone || "",
+      customerEmail,
+      customerAddress,
+      customerGst,
+      customerState,
+      jobRef: `order:${order.id}`,
+    },
+  };
+  const invoice = {
+    invoiceNo,
+    date: new Date().toISOString().split("T")[0],
+    items: [lineItem],
+    subTotal: lineTotal,
+    gstTotal,
+    gstRate: gstPct,
+    discountPct: 0,
+    discountAmt: 0,
+    grandTotal,
+    paymentMode,
+    status: "pending",
+    customer: order.customer || "",
+    customerName: order.customer || "",
+    customerPhone: order.phone || "",
+    customerMobile: order.phone || "",
+    customerEmail,
+    customerAddress,
+    customerGst,
+    customerState,
+    technician: order.technician || "",
+    jobRef: `order:${order.id}`,
+    serviceFrom:
+      order.scheduledDate || new Date().toISOString().split("T")[0],
+    serviceTo: null,
+    remarks,
+    generatedAt,
+  };
+
+  try {
+    const result = await withTransaction(async (conn) => {
+      const created = await invoicesQueries.create(
+        invoice,
+        effectiveScope,
+        conn
+      );
+      if (!created) {
+        const err = new Error("Failed to persist invoice");
+        err.status = 500;
+        throw err;
+      }
+      // Stamp the back-link + flip the order's status in the SAME
+      // transaction. If either fails the invoice rolls back too.
+      await conn.query(
+        "UPDATE orders SET status = ?, invoice_no = ?, updated_at = NOW(3) WHERE id = ?",
+        ["invoiced", created.invoiceNo, order.id]
+      );
+      const [orderRows] = await conn.query(
+        "SELECT id, customer, phone, service, items, qty, qty_kg, status, type, token, invoice_no, subtotal, gst_total, express_surcharge, total, express, expected_return, notes, _store_type, _store_id, _user_email, created_at, updated_at FROM orders WHERE id = ? LIMIT 1",
+        [order.id]
+      );
+      const updatedOrder = (() => {
+        if (!orderRows || !orderRows[0]) return null;
+        const r = orderRows[0];
+        return {
+          id: Number(r.id),
+          customer: r.customer,
+          phone: r.phone,
+          service: r.service,
+          items: r.items || [],
+          qty: r.qty,
+          qtyKg: r.qty_kg,
+          status: r.status,
+          type: r.type,
+          token: r.token,
+          invoiceNo: r.invoice_no,
+          subtotal: r.subtotal,
+          gstTotal: r.gst_total,
+          expressSurcharge: r.express_surcharge,
+          total: r.total,
+          express: !!r.express,
+          expectedReturn: r.expected_return,
+          notes: r.notes,
+          _storeType: r._store_type,
+          _storeId: r._store_id,
+          _userEmail: r._user_email,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        };
+      })();
+      return { invoice: created, order: updatedOrder };
+    });
+    if (!result || !result.invoice) {
+      return res.status(500).json({ error: "Failed to persist invoice" });
+    }
+    // Refresh the shift's cached total_sales so the close-shift dialog
+    // reflects the new bill immediately. Mirrors POST /api/invoices.
+    if (result.invoice.shiftId) {
+      try {
+        await shiftsQueries.recalculateTotals(result.invoice.shiftId);
+      } catch (e) {
+        /* safe no-op; summary endpoint re-aggregates on demand */
+      }
+    }
+    // Broadcast both events so other tabs refresh the orders list and
+    // the invoices list in lockstep. The order event uses
+    // action: "invoiced" so a future consumer can distinguish a normal
+    // edit from a bill generation without parsing the row.
+    try {
+      realtimeHub.publish(
+        realtimeHub.buildInvoiceEvent({
+          action: "created",
+          invoice: result.invoice,
+          scope: effectiveScope,
+        })
+      );
+    } catch (e) {
+      console.warn("[sse] invoice publish failed (f1):", e.message);
+    }
+    try {
+      realtimeHub.publish(
+        realtimeHub.buildOrderEvent({
+          action: "invoiced",
+          order: result.order,
+          scope: effectiveScope,
+        })
+      );
+    } catch (e) {
+      console.warn("[sse] order publish failed (f1):", e.message);
+    }
+    return res.status(201).json({
+      invoice: result.invoice,
+      order: result.order,
+    });
+  } catch (err) {
+    const status = err.status || 500;
+    return res.status(status).json({
+      error: err.message,
+      ...(err.productId ? { productId: err.productId } : {}),
+    });
+  }
+});
+
 // DELETE /api/products/:id
 // Dedicated handler so we can also unlink the product's image file when
 // the row is deleted. Must be declared BEFORE the generic

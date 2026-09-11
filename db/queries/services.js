@@ -100,6 +100,24 @@ const findById = async (id) => {
   return rowToService(rows[0][0]);
 };
 
+// findByName: looks up a service row by its (store-scoped) name. Used by
+// the service-order → invoice conversion flow (F1): the orders.service
+// column stores a free-text name, not a numeric FK, so the route has to
+// resolve the rate/GST by name. Includes the email filter (includeEmail
+// defaults to true for writes here, mirroring findByIdScoped) so a
+// cashier in one store can't accidentally invoice a service from a
+// different store. Returns the first match.
+const findByName = async (name, scope) => {
+  if (!name) return null;
+  const where = buildWhere(scope, {}, { includeEmail: true });
+  const rows = await query(
+    `SELECT ${COLUMNS} FROM services WHERE name = ? ${where.sql ? "AND " + where.sql.replace(/^WHERE /, "") : ""} LIMIT 1`,
+    [String(name), ...where.params]
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToService(rows[0][0]);
+};
+
 const create = async (item, scope) => {
   const id = Date.now();
   await query(
@@ -149,4 +167,4 @@ const deleteById = async (id) => {
   return result[0].affectedRows > 0;
 };
 
-module.exports = { list, findById, findByIdScoped, create, update, deleteById };
+module.exports = { list, findById, findByIdScoped, findByName, create, update, deleteById };
