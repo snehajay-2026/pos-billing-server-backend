@@ -174,5 +174,81 @@ const runRuntimeMigrations = async () => {
   return { applied, skipped, denied };
 };
 
-module.exports = { runRuntimeMigrations, MIGRATIONS };
+// TABLE_MIGRATIONS: idempotent CREATE TABLE IF NOT EXISTS migrations that
+// also run on backend startup. Column-add migrations above cover the
+// "ALTER existing table" case; this list covers the "new table for a new
+// feature" case. Same portability considerations apply (no IF NOT EXISTS
+// for some TiDB tiers; the guard is performed from Node).
+//
+// Why we don't unconditionally use CREATE TABLE IF NOT EXISTS in raw
+// SQL: TiDB Cloud sometimes surfaces "duplicate column" / "feature not
+// supported" errors on the IF NOT EXISTS parser branch, so we probe
+// information_schema first and execute the DDL only when needed — same
+// belt-and-braces pattern as the column adds above.
+const TABLE_MIGRATIONS = [
+  {
+    name: "service_rate_history",
+    table: "service_rate_history",
+    ddl: `CREATE TABLE \`service_rate_history\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`service_id\` BIGINT UNSIGNED NOT NULL,
+      \`service_name\` VARCHAR(255) NULL,
+      \`old_rate\` DECIMAL(12, 2) NULL,
+      \`new_rate\` DECIMAL(12, 2) NULL,
+      \`old_gst\` DECIMAL(5, 2) NULL,
+      \`new_gst\` DECIMAL(5, 2) NULL,
+      \`old_hours\` DECIMAL(8, 2) NULL,
+      \`new_hours\` DECIMAL(8, 2) NULL,
+      \`changed_by_user_id\` BIGINT UNSIGNED NULL,
+      \`changed_by_email\` VARCHAR(255) NULL,
+      \`changed_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      KEY \`idx_srh_service_id\` (\`service_id\`, \`changed_at\`),
+      KEY \`idx_srh_changed_at\` (\`changed_at\`),
+      KEY \`idx_srh_user\` (\`changed_by_user_id\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+];
+
+const runTableMigrations = async () => {
+  if (!process.env.DB_NAME) return { applied: 0, skipped: 0, denied: 0 };
+  let applied = 0;
+  let skipped = 0;
+  let denied = 0;
+  for (const m of TABLE_MIGRATIONS) {
+    let needs = false;
+    try {
+      const [rows] = await pool.query(
+        `SELECT TABLE_NAME FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? LIMIT 1`,
+        [process.env.DB_NAME, m.table]
+      );
+      needs = !rows || rows.length === 0;
+    } catch (err) {
+      console.warn(`[runtime-migrations] ${m.name} inspection failed: ${err.message}`);
+      needs = true;
+    }
+    if (!needs) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      await query(m.ddl);
+      applied += 1;
+      console.log(`[runtime-migrations] applied: ${m.name}`);
+    } catch (err) {
+      if (isDenied(err)) {
+        denied += 1;
+        console.warn(
+          `[runtime-migrations] ${m.name} skipped — app user lacks CREATE rights. ` +
+            `Run this once as a DBA:\n  ${m.ddl};`
+        );
+      } else {
+        console.warn(`[runtime-migrations] ${m.name} failed: ${err.message}`);
+      }
+    }
+  }
+  return { applied, skipped, denied };
+};
+
+module.exports = { runRuntimeMigrations, runTableMigrations, MIGRATIONS, TABLE_MIGRATIONS };
 

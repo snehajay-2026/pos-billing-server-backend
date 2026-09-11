@@ -16,6 +16,7 @@ const ordersQueries = require("./db/queries/orders");
 const customersQueries = require("./db/queries/customers");
 const customerCreditsQueries = require("./db/queries/customer-credits");
 const notificationsQueries = require("./db/queries/notifications");
+const serviceRateHistoryQueries = require("./db/queries/service-rate-history");
 const storeSettingsQueries = require("./db/queries/store-settings");
 const hotelQueries = require("./db/queries/hotel");
 const hotelBookingsQueries = require("./db/queries/hotel-bookings");
@@ -31,7 +32,7 @@ const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
 const couponsQueries = require("./db/queries/coupons");
 const { withTransaction } = require("./db/pool");
-const { runRuntimeMigrations } = require("./db/runtime-migrations");
+const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 
 // Map of MySQL-backed resources to their query modules. The handlers
@@ -2654,6 +2655,30 @@ app.delete("/api/products/:id/image", ensureAuth, async (req, res) => {
   return res.json(updated);
 });
 
+// F6: GET /api/services/:id/rate-history
+// Per-service chronological list of rate / hours / GST changes. The
+// PUT /api/:resource/:id handler above writes one row per price-relevant
+// change; this route exposes the read path to the
+// "View rate history" panel on the service-management page.
+//
+// Must be declared BEFORE the generic `/api/:resource/:id` GET so
+// Express matches the more-specific path first.
+app.get("/api/services/:id/rate-history", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const existing = await servicesQueries.findByIdScoped(id, scope);
+  if (!existing) return res.status(404).json({ error: "Service not found" });
+  const limit = Math.max(
+    1,
+    Math.min(200, Number(req.query.limit) || 50)
+  );
+  const rows = await serviceRateHistoryQueries.list({
+    serviceId: Number(id),
+    limit,
+  });
+  return res.json({ service: { id: existing.id, name: existing.name }, entries: rows });
+});
+
 // F1: Service order → invoice conversion.
 //
 // Generates an invoice from a scheduled service order. The orders.service
@@ -3003,16 +3028,92 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
     });
   }
   const scope = getRequestScope(req);
+  let existing;
   if (typeof mysqlQueries.findByIdScoped !== "function") {
     // Some query modules only expose findById (no scope variant). Fall
     // back to that — no scope enforcement, matching the JSON path.
-    const existing = await mysqlQueries.findById(id);
+    existing = await mysqlQueries.findById(id);
     if (!existing) return res.status(404).json({ error: "Not found" });
   } else {
-    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    existing = await mysqlQueries.findByIdScoped(id, scope);
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const updated = await mysqlQueries.update(id, req.body || {});
+
+  // F6: rate-history capture for service catalog edits. We only append
+  // when at least one of {rate, hours, gst} actually changed — pure
+  // renames / description edits skip the table so it stays a
+  // meaningful audit trail. The diff is intentionally loose about
+  // number/string coercion because the JS layer sometimes sends
+  // numeric strings (form fields) vs. JS numbers (programmatic PUTs).
+  if (resource === "services" && updated) {
+    const numericEq = (a, b) => {
+      if (a == null && b == null) return true;
+      if (a == null || b == null) return false;
+      return Number(a) === Number(b);
+    };
+    const rateChanged = !numericEq(existing.rate, updated.rate);
+    const gstChanged = !numericEq(existing.gst, updated.gst);
+    const hoursChanged = !numericEq(existing.hours, updated.hours);
+    if (rateChanged || gstChanged || hoursChanged) {
+      try {
+        await serviceRateHistoryQueries.append({
+          serviceId: updated.id,
+          serviceName: updated.name || existing.name || null,
+          oldRate: existing.rate,
+          newRate: updated.rate,
+          oldGst: existing.gst,
+          newGst: updated.gst,
+          oldHours: existing.hours,
+          newHours: updated.hours,
+          changedByUserId: req.user?.id || null,
+          changedByEmail: req.user?.email || null,
+        });
+      } catch (e) {
+        // The catalog update already committed — failing to capture the
+        // history row is a soft failure that the operator can repair by
+        // back-filling. Don't fail the request.
+        console.warn("[rate-history] append failed:", e.message);
+      }
+      // Mirror the change into the generic audit_log so the existing
+      // RecentActivity UI (admin-only) surfaces it. RecentActivity
+      // already maps entity_type='services' to "Service" so no frontend
+      // work is required for this hook to take effect.
+      try {
+        await auditLogQueries.append({
+          userId: req.user?.id || null,
+          action: "service.rate_changed",
+          entityType: "service",
+          entityId: String(updated.id),
+          payload: {
+            userEmail: req.user?.email || null,
+            userRole: req.user?.role || null,
+            storeType: scope.storeType || null,
+            storeId: scope.storeId || null,
+            before: {
+              rate: existing.rate,
+              gst: existing.gst,
+              hours: existing.hours,
+            },
+            after: {
+              rate: updated.rate,
+              gst: updated.gst,
+              hours: updated.hours,
+            },
+            fields: [
+              rateChanged ? "rate" : null,
+              gstChanged ? "gst" : null,
+              hoursChanged ? "hours" : null,
+            ].filter(Boolean),
+          },
+          ip: req.ip || null,
+        });
+      } catch (e) {
+        console.warn("[audit-log] service.rate_changed append failed:", e.message);
+      }
+    }
+  }
+
   // F2: broadcast orders + services updates (status flips on a service
   // order, rate change on a service, etc.).
   if (resource === "orders" || resource === "services") {
@@ -3106,6 +3207,22 @@ const startServer = async () => {
     }
   } catch (err) {
     console.warn("[startup] runtime-migrations threw:", err.message);
+  }
+
+  // F6: CREATE TABLE migrations for new feature tables. Same pattern as
+  // the column-add migrations above: probe information_schema from Node,
+  // run the DDL only when the table is missing. The app user
+  // (pos_billing_app) is DML-only on some deployments, so we degrade
+  // gracefully with a hint when ALTER/CREATE is denied.
+  try {
+    const tableResult = await runTableMigrations();
+    if (tableResult.applied || tableResult.denied) {
+      console.log(
+        `[startup] runtime-table-migrations: applied=${tableResult.applied} skipped=${tableResult.skipped} denied=${tableResult.denied}`
+      );
+    }
+  } catch (err) {
+    console.warn("[startup] runtime-table-migrations threw:", err.message);
   }
 
   // Sessions live in MySQL (sessions table) — no in-memory load needed.
