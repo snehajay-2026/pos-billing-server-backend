@@ -1896,9 +1896,16 @@ const requireCashVertical = (req, res) => {
 // caller's currently-open shift (if any) and stamp `scope.shiftId` so the
 // invoices query inserts `shift_id` automatically. We never auto-close an
 // expired shift here — that lives in the frontend's useShiftGate hook which
-// prompts the cashier to close + reopen. For non-cashier roles
-// (STORE_ADMIN/ADMIN/SUPER_OWNER) we deliberately do NOT force a shift
-// link — admin users generate invoices without owning a drawer session.
+// prompts the cashier to close + reopen.
+//
+// F4: For non-cashier roles (STORE_ADMIN/ADMIN/SUPER_OWNER) we now look up
+// the store's currently-open shift (regardless of who opened it) so a
+// manager covering a cashier-less floor still has their invoices linked
+// to the open drawer. When no shift is open for the store, the manager
+// invoice still saves (cashShiftRequired=false) — the row is left unlinked
+// rather than blocked. This preserves the existing business rule
+// (managers don't own a drawer) while fixing the "my UPI/Card sales
+// don't show up in the summary" gap.
 //
 // Returns { scope, activeShift, cashShiftRequired } so the caller can
 // decide what to do when a cashier's sale hits no active shift.
@@ -1909,23 +1916,14 @@ const attachShiftContext = async (req, scope) => {
   if (!storeType || !CASH_VERTICALS.has(String(storeType).toLowerCase())) {
     return { scope: { ...scope, shiftId: null }, activeShift: null, cashShiftRequired: false };
   }
-  // Resolve the caller's open shift (if any) for both cashier and
-  // manager/admin roles. Cashier-equivalents get the existing 409
-  // behavior (no shift → no save) below; managers / super-owners who
-  // happen to have an open shift get their invoices linked to it so
-  // their sales appear in "Sales during this shift" / ShiftsPage /
-  // reconciliation. When no shift is open for a manager, the invoice
-  // still saves (cashShiftRequired=false) — the row is left unlinked
-  // rather than blocked. This preserves the existing business rule
-  // (managers don't own a drawer) while fixing the "my UPI/Card sales
-  // don't show up in the summary" gap.
+  // Cashier: own shift only (never link to a peer's shift on a different
+  // terminal). Non-cashier: store-wide — if anyone has a shift open in
+  // this store, the manager's invoice rolls into that drawer's totals.
   const role = String(req.user?.role || "").toUpperCase();
-  const activeShift = await shiftsQueries.getActiveForUser(
-    req.user.id,
-    scope.storeType,
-    scope.storeId
-  );
   const isCashier = role === "CASHIER";
+  const activeShift = isCashier
+    ? await shiftsQueries.getActiveForUser(req.user.id, scope.storeType, scope.storeId)
+    : await shiftsQueries.getActiveForStore(scope.storeType, scope.storeId);
   return {
     scope: { ...scope, shiftId: activeShift ? Number(activeShift.id) : null },
     activeShift: activeShift || null,

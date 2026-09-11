@@ -160,6 +160,40 @@ const getActiveForUser = async (userId, storeType, storeId) => {
   return rowToShift(rows[0][0]);
 };
 
+// getActiveForStore: most-recent 'open' shift for a (storeType, storeId),
+// regardless of which user opened it. Used by F4 so a manager or admin who
+// generates a service invoice while a cashier's shift is open in the same
+// store still has the row linked to that shift. Without this, manager
+// invoices are saved with shift_id=NULL and never appear in "Sales during
+// this shift" — they vanish from the close-shift dialog and the ShiftsPage
+// totals for the cashier who was on the drawer.
+//
+// Cashier path still uses getActiveForUser: a cashier should only see and
+// be linked to their own shift, not someone else's running in a different
+// terminal.
+const getActiveForStore = async (storeType, storeId) => {
+  if (!storeType && !storeId) return null;
+  const conds = ["status = 'open'"];
+  const params = [];
+  if (storeType) {
+    conds.push("store_type = ?");
+    params.push(String(storeType));
+  }
+  if (storeId) {
+    conds.push("store_id = ?");
+    params.push(String(storeId));
+  }
+  const rows = await query(
+    `SELECT ${SHIFT_COLUMNS_WITH_USERS}
+       FROM shifts
+       WHERE ${conds.join(" AND ")}
+       ORDER BY opened_at DESC, id DESC LIMIT 1`,
+    params
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToShift(rows[0][0]);
+};
+
 const findById = async (id) => {
   const rows = await query(
     `SELECT ${SHIFT_COLUMNS_WITH_USERS}
@@ -642,6 +676,7 @@ const close = async (
 module.exports = {
   // read
   getActiveForUser,
+  getActiveForStore,
   findById,
   list,
   listCashMovements,
