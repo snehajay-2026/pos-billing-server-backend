@@ -2703,6 +2703,21 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
   }
   const scope = getRequestScope(req);
   const created = await mysqlQueries.create(req.body || {}, scope);
+  // F2: broadcast orders + services writes so other tabs / devices see
+  // the new row without polling. Other resources stay quiet — they're
+  // either already wired (invoices/stock) or don't need cross-device
+  // sync (expenses, notifications, customer-credits).
+  if (resource === "orders" || resource === "services") {
+    try {
+      realtimeHub.publish(
+        resource === "orders"
+          ? realtimeHub.buildOrderEvent({ action: "created", order: created, scope })
+          : realtimeHub.buildServiceEvent({ action: "created", service: created, scope })
+      );
+    } catch (e) {
+      console.warn(`[sse] ${resource} create publish failed:`, e.message);
+    }
+  }
   return res.json(created);
 });
 
@@ -2726,6 +2741,19 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const updated = await mysqlQueries.update(id, req.body || {});
+  // F2: broadcast orders + services updates (status flips on a service
+  // order, rate change on a service, etc.).
+  if (resource === "orders" || resource === "services") {
+    try {
+      realtimeHub.publish(
+        resource === "orders"
+          ? realtimeHub.buildOrderEvent({ action: "updated", order: updated, scope })
+          : realtimeHub.buildServiceEvent({ action: "updated", service: updated, scope })
+      );
+    } catch (e) {
+      console.warn(`[sse] ${resource} update publish failed:`, e.message);
+    }
+  }
   return res.json(updated);
 });
 
@@ -2747,6 +2775,27 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const deleted = await mysqlQueries.deleteById(id);
+  // F2: broadcast orders + services deletes so other tabs drop the row
+  // immediately instead of waiting for the next poll cycle.
+  if (resource === "orders" || resource === "services") {
+    try {
+      realtimeHub.publish(
+        resource === "orders"
+          ? realtimeHub.buildOrderEvent({
+              action: "deleted",
+              order: { id: Number(id) },
+              scope,
+            })
+          : realtimeHub.buildServiceEvent({
+              action: "deleted",
+              service: { id: Number(id) },
+              scope,
+            })
+      );
+    } catch (e) {
+      console.warn(`[sse] ${resource} delete publish failed:`, e.message);
+    }
+  }
   return res.json({ ok: deleted });
 });
 

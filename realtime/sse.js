@@ -22,6 +22,10 @@ const buildDefaultChannel = ({ storeType, storeId }) => {
       hub.CHANNELS.INVOICE(storeType, storeId),
       hub.CHANNELS.STOCK(storeType, storeId),
       hub.CHANNELS.SHIFT(storeType, storeId),
+      // F2: orders + services channels joined alongside the others so
+      // service-store realtime works the same way bookings / invoices do.
+      hub.CHANNELS.ORDER(storeType, storeId),
+      hub.CHANNELS.SERVICE(storeType, storeId),
       hub.CHANNELS.ALL(),
     ];
   }

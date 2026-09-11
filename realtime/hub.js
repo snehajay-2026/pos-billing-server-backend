@@ -24,6 +24,12 @@ const CHANNELS = {
   INVOICE: (storeType, storeId) => `invoices:${storeType || ""}:${storeId || ""}`,
   STOCK: (storeType, storeId) => `stock:${storeType || ""}:${storeId || ""}`,
   SHIFT: (storeType, storeId) => `shifts:${storeType || ""}:${storeId || ""}`,
+  // F2: orders + services were missing channels, so cross-tab sync on
+  // service orders and service catalog updates fell back to window-event
+  // polling only. Adding the channels lets the SSE bus carry them the
+  // same way bookings and invoices do today.
+  ORDER: (storeType, storeId) => `orders:${storeType || ""}:${storeId || ""}`,
+  SERVICE: (storeType, storeId) => `services:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -138,6 +144,31 @@ const buildShiftEvent = ({ action, shift, movement, storeType, storeId, userId }
   userId: userId != null ? Number(userId) : userId,
 });
 
+// F2: orders + services realtime.
+//
+// buildOrderEvent covers the `orders` table (service scheduling + laundry
+// intake). One event per write — the client decides whether to refetch the
+// full list or merge the row in place based on `kind`.
+const buildOrderEvent = ({ action, order, scope }) => ({
+  kind: "order",
+  action, // 'created' | 'updated' | 'deleted'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.ORDER(scope?.storeType, scope?.storeId),
+  order: order || null,
+});
+
+// buildServiceEvent covers the `services` catalog (rates, hours, GST). A
+// rate change in one tab now propagates to other tabs without polling.
+const buildServiceEvent = ({ action, service, scope }) => ({
+  kind: "service",
+  action, // 'created' | 'updated' | 'deleted'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.SERVICE(scope?.storeType, scope?.storeId),
+  service: service || null,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
@@ -147,5 +178,7 @@ module.exports = {
   buildInvoiceEvent,
   buildStockEvent,
   buildShiftEvent,
+  buildOrderEvent,
+  buildServiceEvent,
   recentEvents,
 };
