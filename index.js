@@ -1484,13 +1484,17 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
   // Hotel Store discount validation — mirrors `validateDiscount` on the
   // checkout route but additionally enforces `source` (manual | coupon)
   // and re-resolves coupons from the DB so client-claimed values
-  // cannot be spoofed. Runs before any write — failing here is cheap.
+  // cannot be spoofed. Service, Laundry, and other non-Hotel invoices use
+  // the existing generic invoice payload and must not be forced to carry
+  // Hotel coupon metadata.
   let resolvedCoupon = null;
-  try {
-    resolvedCoupon = await validateHotelDiscount(invoice.discount, items, effectiveScope);
-  } catch (err) {
-    const status = err.status || 400;
-    return res.status(status).json({ error: err.message });
+  if (effectiveScope.storeType === "hotel") {
+    try {
+      resolvedCoupon = await validateHotelDiscount(invoice.discount, items, effectiveScope);
+    } catch (err) {
+      const status = err.status || 400;
+      return res.status(status).json({ error: err.message });
+    }
   }
 
   try {
