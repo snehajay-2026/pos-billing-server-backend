@@ -375,6 +375,7 @@ const receivePurchaseOrder = async (id, scope = {}) => {
       const remaining = Number(item.quantity || 0) - Number(item.received_quantity || 0);
       if (remaining <= 0) continue;
       await conn.execute("UPDATE purchase_order_items SET received_quantity=? WHERE id=?", [item.quantity, item.id]);
+      if (item.catalog_type === "service") continue;
       const [move] = await conn.execute(
         `INSERT INTO stock_movements (product_id, product_name, type, quantity, reason, purchase_order_id, _store_type, _store_id, created_at)
          VALUES (?, ?, 'in', ?, ?, ?, ?, ?, NOW(3))`,
@@ -384,10 +385,10 @@ const receivePurchaseOrder = async (id, scope = {}) => {
         id: move.insertId,
         quantity: remaining,
         productId: item.product_id,
-        catalogType: item.catalog_type === "service" ? "service" : "product",
+        catalogType: "product",
         catalogId: item.catalog_id,
       });
-      if (item.catalog_type !== "service" && item.product_id) {
+      if (item.product_id) {
         await conn.execute(
           `UPDATE products SET stock=stock+?, updated_at=NOW(3) WHERE id=?${scope.storeType ? " AND _store_type=?" : ""}${scope.storeId ? " AND _store_id=?" : ""}`,
           [remaining, item.product_id, ...(scope.storeType ? [scope.storeType] : []), ...(scope.storeId ? [scope.storeId] : [])]
