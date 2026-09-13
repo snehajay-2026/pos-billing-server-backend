@@ -11,7 +11,7 @@ const SUPPLIER_COLUMNS =
 const PO_COLUMNS =
   "id, po_number, supplier_id, supplier_name, status, total_amount, notes, expected_at, received_at, _store_type, _store_id, _user_email, created_at, updated_at";
 const PO_ITEM_COLUMNS =
-  "id, purchase_order_id, product_id, product_name, quantity, unit_price, received_quantity";
+  "id, purchase_order_id, catalog_type, catalog_id, product_id, product_name, quantity, unit_price, received_quantity";
 const STOCK_MOVE_COLUMNS =
   "id, product_id, product_name, type, quantity, reason, purchase_order_id, created_by, _store_type, _store_id, created_at";
 
@@ -64,6 +64,13 @@ const rowToPoItem = (row) =>
     ? {
         id: Number(row.id),
         purchaseOrderId: Number(row.purchase_order_id),
+        catalogType: row.catalog_type === "service" ? "service" : "product",
+        catalogId:
+          row.catalog_id != null
+            ? Number(row.catalog_id)
+            : row.product_id == null
+              ? null
+              : Number(row.product_id),
         productId: row.product_id == null ? null : Number(row.product_id),
         productName: row.product_name || "",
         quantity: toNumber(row.quantity) ?? 0,
@@ -120,18 +127,33 @@ const normalizePoItems = (items) => {
     throw new Error("At least one purchase-order line is required");
   }
   return items.map((item) => {
-    const productId = item?.productId == null || item.productId === "" ? null : Number(item.productId);
+    const catalogType = item?.catalogType === "service" ? "service" : "product";
+    const catalogId = item?.catalogId ?? item?.productId;
+    const numericCatalogId = catalogId == null || catalogId === "" ? null : Number(catalogId);
+    const productId = catalogType === "product" ? numericCatalogId : null;
     const productName = String(item?.productName || item?.name || "").trim();
     const quantity = Number(item?.quantity ?? item?.qty);
     const unitPrice = Number(item?.unitPrice ?? item?.unitCost);
-    if (!productName && !Number.isFinite(productId)) throw new Error("Each PO line needs a product");
+    if (!productName && !Number.isFinite(numericCatalogId)) throw new Error("Each PO line needs a catalog item");
+    if (!Number.isFinite(numericCatalogId) || numericCatalogId <= 0) throw new Error("Each PO line needs a valid catalog item");
     if (!Number.isFinite(quantity) || quantity <= 0) throw new Error("PO quantities must be greater than zero");
     if (!Number.isFinite(unitPrice) || unitPrice < 0) throw new Error("PO unit prices must be non-negative");
-    return { productId: Number.isFinite(productId) ? productId : null, productName, quantity, unitPrice };
+    return { catalogType, catalogId: numericCatalogId, productId, productName, quantity, unitPrice };
   });
 };
 
 const totalForItems = (items) => items.reduce((total, item) => total + item.quantity * item.unitPrice, 0);
+
+const assertCatalogItemsInScope = async (items, scope) => {
+  for (const item of items) {
+    const table = item.catalogType === "service" ? "services" : "products";
+    const [rows] = await query(
+      `SELECT id FROM ${table} WHERE id = ? AND _store_type = ? AND _store_id = ? LIMIT 1`,
+      [item.catalogId, scope.storeType || "", scope.storeId || ""]
+    );
+    if (!rows.length) throw new Error(`${item.catalogType === "service" ? "Service" : "Product"} not found in this store`);
+  }
+};
 
 // === Suppliers ==============================================================
 
@@ -251,6 +273,7 @@ const createPurchaseOrder = async (item, scope) => {
   if (!poNumber) throw new Error("poNumber is required");
   const items = normalizePoItems(item.items);
   await assertSupplierInScope(item.supplierId, scope);
+  await assertCatalogItemsInScope(items, scope);
   const totalAmount = totalForItems(items);
   const id = await withTransaction(async (conn) => {
     const [result] = await conn.execute(
@@ -271,9 +294,9 @@ const createPurchaseOrder = async (item, scope) => {
     );
     for (const line of items) {
       await conn.execute(
-        `INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, unit_price, received_quantity)
-         VALUES (?, ?, ?, ?, ?, 0)`,
-        [result.insertId, line.productId, line.productName, line.quantity, line.unitPrice]
+        `INSERT INTO purchase_order_items (purchase_order_id, catalog_type, catalog_id, product_id, product_name, quantity, unit_price, received_quantity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+        [result.insertId, line.catalogType, line.catalogId, line.productId, line.productName, line.quantity, line.unitPrice]
       );
     }
     return result.insertId;
@@ -289,6 +312,7 @@ const updatePurchaseOrder = async (id, patch, scope = {}) => {
   }
   const items = patch.items === undefined ? current.items : normalizePoItems(patch.items);
   await assertSupplierInScope(patch.supplierId ?? current.supplierId, scope);
+  if (patch.items !== undefined) await assertCatalogItemsInScope(items, scope);
   const header = {
     poNumber: String(patch.poNumber ?? current.poNumber).trim(),
     supplierId: patch.supplierId ?? current.supplierId,
@@ -311,9 +335,9 @@ const updatePurchaseOrder = async (id, patch, scope = {}) => {
       await conn.execute("DELETE FROM purchase_order_items WHERE purchase_order_id = ?", [id]);
       for (const line of items) {
         await conn.execute(
-          `INSERT INTO purchase_order_items (purchase_order_id, product_id, product_name, quantity, unit_price, received_quantity)
-           VALUES (?, ?, ?, ?, ?, 0)`,
-          [id, line.productId, line.productName, line.quantity, line.unitPrice]
+          `INSERT INTO purchase_order_items (purchase_order_id, catalog_type, catalog_id, product_id, product_name, quantity, unit_price, received_quantity)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+          [id, line.catalogType, line.catalogId, line.productId, line.productName, line.quantity, line.unitPrice]
         );
       }
     }
@@ -344,7 +368,7 @@ const receivePurchaseOrder = async (id, scope = {}) => {
     );
     if (!updated.affectedRows) throw new Error("Purchase order not found");
     const [items] = await conn.execute(
-      `SELECT id, product_id, product_name, quantity, unit_price, received_quantity FROM purchase_order_items WHERE purchase_order_id=? ORDER BY id ASC`,
+      `SELECT id, catalog_type, catalog_id, product_id, product_name, quantity, unit_price, received_quantity FROM purchase_order_items WHERE purchase_order_id=? ORDER BY id ASC`,
       [id]
     );
     for (const item of items) {
@@ -356,8 +380,14 @@ const receivePurchaseOrder = async (id, scope = {}) => {
          VALUES (?, ?, 'in', ?, ?, ?, ?, ?, NOW(3))`,
         [item.product_id, item.product_name, remaining, `PO ${po.poNumber}`, id, scope.storeType || null, scope.storeId || null]
       );
-      movements.push({ id: move.insertId, quantity: remaining, productId: item.product_id });
-      if (item.product_id) {
+      movements.push({
+        id: move.insertId,
+        quantity: remaining,
+        productId: item.product_id,
+        catalogType: item.catalog_type === "service" ? "service" : "product",
+        catalogId: item.catalog_id,
+      });
+      if (item.catalog_type !== "service" && item.product_id) {
         await conn.execute(
           `UPDATE products SET stock=stock+?, updated_at=NOW(3) WHERE id=?${scope.storeType ? " AND _store_type=?" : ""}${scope.storeId ? " AND _store_id=?" : ""}`,
           [remaining, item.product_id, ...(scope.storeType ? [scope.storeType] : []), ...(scope.storeId ? [scope.storeId] : [])]

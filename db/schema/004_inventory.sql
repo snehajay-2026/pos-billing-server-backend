@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS `purchase_orders` (
 CREATE TABLE IF NOT EXISTS `purchase_order_items` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `purchase_order_id` BIGINT UNSIGNED NOT NULL,
+  `catalog_type` ENUM('product', 'service') NOT NULL DEFAULT 'product',
+  `catalog_id` BIGINT UNSIGNED NULL,
   `product_id` BIGINT UNSIGNED NULL,
   `product_name` VARCHAR(255) NOT NULL,
   `quantity` DECIMAL(12, 3) NOT NULL DEFAULT 0,

@@ -56,6 +56,18 @@ const MIGRATIONS = [
     ddl: "ALTER TABLE `products` ADD COLUMN `image_mime` VARCHAR(64) NULL AFTER `image_path`",
   },
   {
+    name: "purchase_order_items.catalog_type",
+    table: "purchase_order_items",
+    column: "catalog_type",
+    ddl: "ALTER TABLE `purchase_order_items` ADD COLUMN `catalog_type` ENUM('product', 'service') NOT NULL DEFAULT 'product' AFTER `purchase_order_id`",
+  },
+  {
+    name: "purchase_order_items.catalog_id",
+    table: "purchase_order_items",
+    column: "catalog_id",
+    ddl: "ALTER TABLE `purchase_order_items` ADD COLUMN `catalog_id` BIGINT UNSIGNED NULL AFTER `catalog_type`",
+  },
+  {
     // Bug #2 fix: ref_type/ref_id were planned but never migrated onto
     // shift_cash_movements. Without them, the cashier's "Record drop"
     // button could fire twice and double-count into expected_cash. After
