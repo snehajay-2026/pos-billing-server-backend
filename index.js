@@ -2461,14 +2461,14 @@ app.post("/api/suppliers", ensureAuth, async (req, res) => {
 
 app.put("/api/suppliers/:id", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const supplier = await inventoryQueries.updateSupplier(req.params.id, req.body || {});
+  const supplier = await inventoryQueries.updateSupplier(req.params.id, req.body || {}, getInvScope(req));
   if (!supplier) return res.status(404).json({ error: "Supplier not found" });
   res.json(supplier);
 });
 
 app.delete("/api/suppliers/:id", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const ok = await inventoryQueries.deleteSupplier(req.params.id);
+  const ok = await inventoryQueries.deleteSupplier(req.params.id, getInvScope(req));
   if (!ok) return res.status(404).json({ error: "Supplier not found" });
   res.json({ ok: true });
 });
@@ -2483,29 +2483,27 @@ app.get("/api/purchase-orders", ensureAuth, async (req, res) => {
 app.post("/api/purchase-orders", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const po = await inventoryQueries.createPurchaseOrder(req.body || {}, getInvScope(req));
-  if (!po) return res.status(400).json({ error: "poNumber is required" });
-  // Decorate with items so the frontend gets them in one shot.
-  const items = await inventoryQueries.listPoItems(po.id);
-  res.json({ ...po, items });
+  if (!po) return res.status(400).json({ error: "poNumber and at least one valid line are required" });
+  res.status(201).json(po);
 });
 
 app.put("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const po = await inventoryQueries.updatePurchaseOrder(req.params.id, req.body || {});
+  const po = await inventoryQueries.updatePurchaseOrder(req.params.id, req.body || {}, getInvScope(req));
   if (!po) return res.status(404).json({ error: "Purchase order not found" });
   res.json(po);
 });
 
 app.delete("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const ok = await inventoryQueries.deletePurchaseOrder(req.params.id);
+  const ok = await inventoryQueries.deletePurchaseOrder(req.params.id, getInvScope(req));
   if (!ok) return res.status(404).json({ error: "Purchase order not found" });
   res.json({ ok: true });
 });
 
 app.post("/api/purchase-orders/:id/receive", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const po = await inventoryQueries.receivePurchaseOrder(req.params.id);
+  const po = await inventoryQueries.receivePurchaseOrder(req.params.id, getInvScope(req));
   if (!po) return res.status(404).json({ error: "Purchase order not found" });
   res.json(po);
 });
@@ -2524,9 +2522,6 @@ app.post("/api/stock-movements", ensureAuth, async (req, res) => {
     { ...(req.body || {}), createdBy: req.user.id },
     scope
   );
-  if (!movement) {
-    return res.status(400).json({ error: "productId, type (in|out|adjustment) and positive quantity required" });
-  }
 
   // Look up the product's current stock + low-stock threshold so we can
   // tell the client whether this movement pushed the item under the
