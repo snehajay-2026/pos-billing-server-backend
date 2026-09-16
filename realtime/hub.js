@@ -30,6 +30,8 @@ const CHANNELS = {
   // same way bookings and invoices do today.
   ORDER: (storeType, storeId) => `orders:${storeType || ""}:${storeId || ""}`,
   SERVICE: (storeType, storeId) => `services:${storeType || ""}:${storeId || ""}`,
+  CUSTOMER: (storeType, storeId) => `customers:${storeType || ""}:${storeId || ""}`,
+  CUSTOMER_CREDIT: (storeType, storeId) => `customer-credits:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -169,6 +171,26 @@ const buildServiceEvent = ({ action, service, scope }) => ({
   service: service || null,
 });
 
+// Customer events are invalidations only. The API remains authoritative so
+// sensitive customer fields never need to travel through the SSE stream.
+const buildCustomerEvent = ({ action, customer, scope }) => ({
+  kind: "customer",
+  action, // 'created' | 'updated' | 'deleted'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.CUSTOMER(scope?.storeType, scope?.storeId),
+  customer: customer ? { id: customer.id } : null,
+});
+
+const buildCustomerCreditEvent = ({ action, credit, scope }) => ({
+  kind: "customer_credit",
+  action, // 'created' | 'updated' | 'deleted'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.CUSTOMER_CREDIT(scope?.storeType, scope?.storeId),
+  credit: credit ? { id: credit.id } : null,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
@@ -180,5 +202,7 @@ module.exports = {
   buildShiftEvent,
   buildOrderEvent,
   buildServiceEvent,
+  buildCustomerEvent,
+  buildCustomerCreditEvent,
   recentEvents,
 };

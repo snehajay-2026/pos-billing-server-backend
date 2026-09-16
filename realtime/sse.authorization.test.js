@@ -29,6 +29,8 @@ const channelsFor = (storeType, storeId) => [
   hub.CHANNELS.SHIFT(storeType, storeId),
   hub.CHANNELS.ORDER(storeType, storeId),
   hub.CHANNELS.SERVICE(storeType, storeId),
+  hub.CHANNELS.CUSTOMER(storeType, storeId),
+  hub.CHANNELS.CUSTOMER_CREDIT(storeType, storeId),
 ];
 
 test("non-super roles cannot widen SSE scope with store query parameters", () => {
@@ -123,6 +125,8 @@ test("Store A subscribers cannot receive Store B events for every realtime event
     "stock",
     "order",
     "service",
+    "customer",
+    "customer_credit",
     "shift",
     "booking",
     "hotel",
@@ -179,6 +183,8 @@ test("all audited event kinds match only their authorized store channel", () => 
     "stock",
     "order",
     "service",
+    "customer",
+    "customer_credit",
     "shift",
     "booking",
     "hotel",

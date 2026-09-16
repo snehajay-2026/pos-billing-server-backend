@@ -116,6 +116,8 @@ const buildDefaultChannel = ({ storeType, storeId, isGlobal }) => {
     hub.CHANNELS.SHIFT(storeType, storeId),
     hub.CHANNELS.ORDER(storeType, storeId),
     hub.CHANNELS.SERVICE(storeType, storeId),
+    hub.CHANNELS.CUSTOMER(storeType, storeId),
+    hub.CHANNELS.CUSTOMER_CREDIT(storeType, storeId),
   ];
 };
 

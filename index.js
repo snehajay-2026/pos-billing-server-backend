@@ -236,6 +236,33 @@ const requireRealtimeScope = (req, row = null) => {
   return scope;
 };
 
+const REALTIME_RESOURCE_KINDS = {
+  orders: "order",
+  services: "service",
+  customers: "customer",
+  "customer-credits": "customer_credit",
+};
+
+const publishGenericResourceEvent = ({ resource, action, row, req }) => {
+  const kind = REALTIME_RESOURCE_KINDS[resource];
+  if (!kind || !row) return;
+  const scope = requireRealtimeScope(req, row);
+  if (kind === "order") {
+    const order = action === "deleted" ? { id: row.id } : row;
+    return realtimeHub.publish(realtimeHub.buildOrderEvent({ action, order, scope }));
+  }
+  if (kind === "service") {
+    const service = action === "deleted" ? { id: row.id } : row;
+    return realtimeHub.publish(realtimeHub.buildServiceEvent({ action, service, scope }));
+  }
+  if (kind === "customer") {
+    return realtimeHub.publish(realtimeHub.buildCustomerEvent({ action, customer: row, scope }));
+  }
+  return realtimeHub.publish(
+    realtimeHub.buildCustomerCreditEvent({ action, credit: row, scope })
+  );
+};
+
 const getAuthorizedLookupScope = (req) => {
   const scope = getRequestScope(req);
   if (scope.storeType && scope.storeId) return scope;
@@ -1463,6 +1490,16 @@ app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
     return res.status(404).json({ error: "Not found" });
   }
   const updated = await invoicesQueries.update(existing.id, req.body || {});
+  if (updated) {
+    const eventScope = requireRealtimeScope(req, updated);
+    realtimeHub.publish(
+      realtimeHub.buildInvoiceEvent({
+        action: "updated",
+        invoice: updated,
+        scope: eventScope,
+      })
+    );
+  }
   return res.json(updated);
 });
 
@@ -3023,18 +3060,11 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
   }
   const scope = getRequestScope(req);
   const created = await mysqlQueries.create(req.body || {}, scope);
-  // F2: broadcast orders + services writes so other tabs / devices see
-  // the new row without polling. Other resources stay quiet — they're
-  // either already wired (invoices/stock) or don't need cross-device
-  // sync (expenses, notifications, customer-credits).
-  if (resource === "orders" || resource === "services") {
+  // Broadcast only resources that have an active cross-device consumer. The
+  // event is a scoped invalidation; the API remains the source of truth.
+  if (REALTIME_RESOURCE_KINDS[resource]) {
     try {
-      const eventScope = requireRealtimeScope(req, created);
-      realtimeHub.publish(
-        resource === "orders"
-          ? realtimeHub.buildOrderEvent({ action: "created", order: created, scope: eventScope })
-          : realtimeHub.buildServiceEvent({ action: "created", service: created, scope: eventScope })
-      );
+      publishGenericResourceEvent({ resource, action: "created", row: created, req });
     } catch (e) {
       console.warn(`[sse] ${resource} create publish failed:`, e.message);
     }
@@ -3138,16 +3168,9 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
     }
   }
 
-  // F2: broadcast orders + services updates (status flips on a service
-  // order, rate change on a service, etc.).
-  if (resource === "orders" || resource === "services") {
+  if (REALTIME_RESOURCE_KINDS[resource] && updated) {
     try {
-      const eventScope = requireRealtimeScope(req, updated);
-      realtimeHub.publish(
-        resource === "orders"
-          ? realtimeHub.buildOrderEvent({ action: "updated", order: updated, scope: eventScope })
-          : realtimeHub.buildServiceEvent({ action: "updated", service: updated, scope: eventScope })
-      );
+      publishGenericResourceEvent({ resource, action: "updated", row: updated, req });
     } catch (e) {
       console.warn(`[sse] ${resource} update publish failed:`, e.message);
     }
@@ -3174,24 +3197,13 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const deleted = await mysqlQueries.deleteById(id);
-  // F2: broadcast orders + services deletes so other tabs drop the row
-  // immediately instead of waiting for the next poll cycle.
-  if (resource === "orders" || resource === "services") {
+  if (deleted && REALTIME_RESOURCE_KINDS[resource]) {
     try {
-      const eventScope = requireRealtimeScope(req, existing);
-      realtimeHub.publish(
-        resource === "orders"
-          ? realtimeHub.buildOrderEvent({
-              action: "deleted",
-              order: { id: Number(id) },
-              scope: eventScope,
-            })
-          : realtimeHub.buildServiceEvent({
-              action: "deleted",
-              service: { id: Number(id) },
-              scope: eventScope,
-            })
-      );
+      const reference = {
+        ...existing,
+        id: Number.isNaN(Number(id)) ? id : Number(id),
+      };
+      publishGenericResourceEvent({ resource, action: "deleted", row: reference, req });
     } catch (e) {
       console.warn(`[sse] ${resource} delete publish failed:`, e.message);
     }
