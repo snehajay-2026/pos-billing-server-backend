@@ -34,6 +34,11 @@ const couponsQueries = require("./db/queries/coupons");
 const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
+const { getRequestScope } = require("./lib/request-scope");
+const {
+  findAuthorizedInvoiceByNo,
+  getAuthorizedInvoiceScope,
+} = require("./lib/invoice-authorization");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -193,41 +198,6 @@ const ensureAuth = async (req, res, next) => {
   }
   req.user = user;
   next();
-};
-
-const getRequestScope = (req) => {
-  // SUPER_OWNER is unscoped by default and may explicitly narrow requests
-  // to a store. Every other role is permanently bound to the session-loaded
-  // user scope; query parameters must never widen tenant access.
-  const role = String(req.user?.role || "").toUpperCase();
-  const query = req.query || {};
-  const scalar = (value) => {
-    if (Array.isArray(value)) return value.length === 1 ? String(value[0] || "").trim() : "";
-    return value == null ? "" : String(value).trim();
-  };
-  const userStoreType = scalar(req.user?.storeType);
-  const userStoreId = scalar(req.user?.storeId) || userStoreType;
-  const queryStoreType = scalar(query.storeType);
-  const queryStoreId = scalar(query.storeId);
-
-  if (role !== "SUPER_OWNER") {
-    return {
-      storeType: userStoreType,
-      storeId: userStoreId,
-      email: String(req.user?.email || "").trim(),
-    };
-  }
-
-  // `email` is always populated for SUPER_OWNER even when unscoped so the
-  // coupon redemption fallback can resolve owner-scoped coupons.
-  if (!queryStoreType) {
-    return { storeType: null, storeId: null, email: String(req.user?.email || "").trim() };
-  }
-  return {
-    storeType: queryStoreType,
-    storeId: queryStoreId || queryStoreType,
-    email: String(query.email || req.user?.email || "").trim(),
-  };
 };
 
 const getRealtimeScope = (req, row = null) => {
@@ -1467,7 +1437,11 @@ app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
 });
 
 app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
-  const invoice = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
+  const invoice = await findAuthorizedInvoiceByNo(
+    req,
+    req.params.invoiceNo,
+    invoicesQueries.findByInvoiceNoScoped
+  );
   if (!invoice) {
     return res.status(404).json({ error: "Not found" });
   }
@@ -1483,19 +1457,10 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
 // pairs the GET handler above: same lookup by invoice_no, same scope
 // enforcement, then delegates to update() with the resolved integer id.
 app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
-  const existing = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
+  const scope = getAuthorizedInvoiceScope(req);
+  const existing = await invoicesQueries.findByInvoiceNoScoped(req.params.invoiceNo, scope);
   if (!existing) {
     return res.status(404).json({ error: "Not found" });
-  }
-  const scope = getRequestScope(req);
-  // Enforce the same store-scoped gate the generic PUT does for non-super
-  // owners. Reusing findByIdScoped with the row's id + the request scope
-  // makes this drop table rows that don't belong to the caller.
-  if (typeof invoicesQueries.findByIdScoped === "function") {
-    const allowed = await invoicesQueries.findByIdScoped(existing.id, scope);
-    if (!allowed) {
-      return res.status(404).json({ error: "Not found" });
-    }
   }
   const updated = await invoicesQueries.update(existing.id, req.body || {});
   return res.json(updated);

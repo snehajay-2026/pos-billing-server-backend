@@ -14,6 +14,7 @@
 //     transaction rolls back and no partial state is committed.
 
 const { query, withTransaction } = require("../pool");
+const { buildInvoiceNoScope } = require("../../lib/invoice-scope");
 
 // `invoices.generated_at` is added in migration `009_invoice_generated_at.sql`
 // to persist the cashier-perceived moment of clicking Generate Invoice. We
@@ -181,6 +182,20 @@ const findByInvoiceNo = async (invoiceNo) => {
   const rows = await query(
     `SELECT ${COLUMNS.withGen} FROM invoices WHERE invoice_no = ? LIMIT 1`,
     [String(invoiceNo)]
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToInvoice(rows[0][0]);
+};
+
+// Authenticated invoice-number lookup. Keep the unscoped helper above for
+// the intentionally public invoice route and controlled internal readbacks;
+// request handlers must use this variant with the scope resolved from the
+// authenticated session.
+const findByInvoiceNoScoped = async (invoiceNo, scope = {}) => {
+  const { where, params } = buildInvoiceNoScope(invoiceNo, scope);
+  const rows = await query(
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE ${where} LIMIT 1`,
+    params
   );
   if (!rows[0] || rows[0].length === 0) return null;
   return rowToInvoice(rows[0][0]);
@@ -510,6 +525,7 @@ const deleteById = async (id) => {
 
 module.exports = {
   findByInvoiceNo,
+  findByInvoiceNoScoped,
   createWithStockDecrement,
   list,
   create,
