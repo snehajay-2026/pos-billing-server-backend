@@ -82,10 +82,20 @@ const listByStore = async ({ storeType, storeId, kind, status } = {}) => {
   return rows[0].map(rowToBooking);
 };
 
-const findById = async (id) => {
+const findById = async (id, scope = {}) => {
+  const conds = ["id = ?"];
+  const params = [id];
+  if (scope.storeType) {
+    conds.push("_store_type = ?");
+    params.push(String(scope.storeType));
+  }
+  if (scope.storeId) {
+    conds.push("_store_id = ?");
+    params.push(String(scope.storeId));
+  }
   const rows = await query(
-    `SELECT ${COLUMNS} FROM hotel_bookings WHERE id = ? LIMIT 1`,
-    [id]
+    `SELECT ${COLUMNS} FROM hotel_bookings WHERE ${conds.join(" AND ")} LIMIT 1`,
+    params
   );
   if (!rows[0] || rows[0].length === 0) return null;
   return rowToBooking(rows[0][0]);
@@ -127,7 +137,7 @@ const findByRefId = async (kind, refId, { storeType, storeId, status } = {}) => 
 // otherwise insert a fresh row.
 const upsert = async (booking, scope) => {
   const existing = booking.id
-    ? await findById(booking.id)
+    ? await findById(booking.id, scope)
     : await findByRefId(booking.kind, booking.kind === "dining" ? booking.tableId : booking.roomId, {
         storeType: scope.storeType,
         storeId: scope.storeId,

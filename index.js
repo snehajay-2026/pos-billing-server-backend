@@ -196,21 +196,83 @@ const ensureAuth = async (req, res, next) => {
 };
 
 const getRequestScope = (req) => {
-  // SUPER_OWNER is unscoped: they see data across all stores. The query-
-  // string storeType/storeId overrides win for explicit filtering.
-  //
-  // `email` is always populated for SUPER_OWNER even when unscoped so
-  // the coupon redemption fallback (findActiveByCodeForOwner) can
-  // resolve cross-store coupons owned by this user.
-  if (req.user?.role === "SUPER_OWNER" && !req.query.storeType) {
-    return { storeType: null, storeId: null, email: req.user.email };
+  // SUPER_OWNER is unscoped by default and may explicitly narrow requests
+  // to a store. Every other role is permanently bound to the session-loaded
+  // user scope; query parameters must never widen tenant access.
+  const role = String(req.user?.role || "").toUpperCase();
+  const query = req.query || {};
+  const scalar = (value) => {
+    if (Array.isArray(value)) return value.length === 1 ? String(value[0] || "").trim() : "";
+    return value == null ? "" : String(value).trim();
+  };
+  const userStoreType = scalar(req.user?.storeType);
+  const userStoreId = scalar(req.user?.storeId) || userStoreType;
+  const queryStoreType = scalar(query.storeType);
+  const queryStoreId = scalar(query.storeId);
+
+  if (role !== "SUPER_OWNER") {
+    return {
+      storeType: userStoreType,
+      storeId: userStoreId,
+      email: String(req.user?.email || "").trim(),
+    };
   }
-  const storeType = String(req.query.storeType || req.user?.storeType || "").trim();
-  const storeId = req.query.storeId !== undefined && req.query.storeId !== null
-    ? String(req.query.storeId).trim() || storeType
-    : String(req.user?.storeId || req.user?.storeType || "").trim();
-  const email = String(req.query.email || req.user?.email || "").trim();
-  return { storeType, storeId, email };
+
+  // `email` is always populated for SUPER_OWNER even when unscoped so the
+  // coupon redemption fallback can resolve owner-scoped coupons.
+  if (!queryStoreType) {
+    return { storeType: null, storeId: null, email: String(req.user?.email || "").trim() };
+  }
+  return {
+    storeType: queryStoreType,
+    storeId: queryStoreId || queryStoreType,
+    email: String(query.email || req.user?.email || "").trim(),
+  };
+};
+
+const getRealtimeScope = (req, row = null) => {
+  const requestScope = getRequestScope(req);
+  const rowStoreType = row?._storeType || row?.storeType;
+  const rowStoreId = row?._storeId || row?.storeId;
+  if (rowStoreType && rowStoreId) {
+    const rowScope = {
+      storeType: String(rowStoreType).trim(),
+      storeId: String(rowStoreId).trim(),
+    };
+    // A persisted row is authoritative only after confirming that a scoped
+    // caller is allowed to see it. SUPER_OWNER may intentionally operate
+    // across stores; ordinary users may not publish another store's row.
+    if (String(req.user?.role || "").toUpperCase() !== "SUPER_OWNER") {
+      if (
+        rowScope.storeType !== String(requestScope.storeType || "") ||
+        rowScope.storeId !== String(requestScope.storeId || "")
+      ) {
+        return null;
+      }
+    }
+    return rowScope;
+  }
+  if (!requestScope.storeType || !requestScope.storeId) return null;
+  return { storeType: requestScope.storeType, storeId: requestScope.storeId };
+};
+
+const requireRealtimeScope = (req, row = null) => {
+  const scope = getRealtimeScope(req, row);
+  if (!scope) {
+    const error = new Error("A concrete authorized store scope is required for realtime events");
+    error.status = 403;
+    throw error;
+  }
+  return scope;
+};
+
+const getAuthorizedLookupScope = (req) => {
+  const scope = getRequestScope(req);
+  if (scope.storeType && scope.storeId) return scope;
+  if (String(req.user?.role || "").toUpperCase() === "SUPER_OWNER") return {};
+  const error = new Error("A concrete authorized store scope is required");
+  error.status = 403;
+  throw error;
 };
 
 const isScopedStoreSettingsData = (data) => {
@@ -796,9 +858,9 @@ app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req
 // don't fall through.
 
 app.get("/api/hotel/bookings", ensureAuth, async (req, res) => {
+  const scope = getAuthorizedLookupScope(req);
   const bookings = await hotelBookingsQueries.listByStore({
-    storeType: req.query.storeType,
-    storeId: req.query.storeId,
+    ...scope,
     kind: req.query.kind,
     status: req.query.status,
   });
@@ -810,12 +872,10 @@ app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
   if (!["dining", "lodging"].includes(String(body.kind))) {
     return res.status(400).json({ error: "kind must be 'dining' or 'lodging'" });
   }
-  // scope comes from query params (frontend sends storeType + storeId on
-  // every booking API call); fall back to the requesting user's store.
-  const scope = {
-    storeType: req.query.storeType || req.user?.storeType || "hotel",
-    storeId: req.query.storeId || req.user?.storeId || "hotel",
-  };
+  // Query parameters are only a client hint. The authenticated request scope
+  // is the source of truth for ordinary users; Super Owner may explicitly
+  // narrow to a selected store.
+  const scope = requireRealtimeScope(req);
   const booking = await hotelBookingsQueries.upsert(
     {
       ...body,
@@ -849,27 +909,32 @@ app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
 });
 
 app.put("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+  const requestScope = requireRealtimeScope(req);
+  const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
+  if (!existing) return res.status(404).json({ error: "Booking not found" });
   const updated = await hotelBookingsQueries.update(req.params.id, req.body || {});
   if (!updated) return res.status(404).json({ error: "Booking not found" });
   realtimeHub.publish(
     realtimeHub.buildBookingEvent({
       action: "updated",
       booking: updated,
-      scope: { storeType: updated._storeType, storeId: updated._storeId },
+      scope: requireRealtimeScope(req, updated),
     })
   );
   res.json(updated);
 });
 
 app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+  const requestScope = requireRealtimeScope(req);
+  const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
+  if (!existing) return res.status(404).json({ error: "Booking not found" });
   const ok = await hotelBookingsQueries.deleteById(req.params.id);
   if (!ok) return res.status(404).json({ error: "Booking not found" });
   realtimeHub.publish(
     realtimeHub.buildHotelEvent({
       action: "deleted",
       kind: "booking",
-      storeType: req.query.storeType,
-      storeId: req.query.storeId,
+      ...requireRealtimeScope(req, existing),
       data: { id: Number(req.params.id) },
     })
   );
@@ -877,6 +942,9 @@ app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
 });
 
 app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
+  const requestScope = requireRealtimeScope(req);
+  const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
+  if (!existing) return res.status(404).json({ error: "Booking not found" });
   const booking = await hotelBookingsQueries.checkout(req.params.id);
   if (!booking) return res.status(404).json({ error: "Booking not found" });
   realtimeHub.publish(
@@ -900,14 +968,11 @@ app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
 // for Clear Table. We re-read the now-checked-out row so the broadcast
 // carries the merged guest / customer-mobile / check-in fields too.
 app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => {
-  const { kind, refId, storeType, storeId } = req.body || {};
+  const { kind, refId } = req.body || {};
   if (!kind || !refId) {
     return res.status(400).json({ error: "kind and refId are required" });
   }
-  const scope = {
-    storeType: storeType || req.query.storeType,
-    storeId: storeId || req.query.storeId,
-  };
+  const scope = requireRealtimeScope(req);
   await hotelBookingsQueries.clearByRefId(kind, refId, scope);
   const updatedBooking = await hotelBookingsQueries.findByRefId(kind, refId, scope);
   realtimeHub.publish(
@@ -940,10 +1005,7 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
 app.post("/api/hotel/rooms/:id/checkout", ensureAuth, async (req, res) => {
   const roomId = String(req.params.id || "").trim();
   if (!roomId) return res.status(400).json({ error: "room id is required" });
-  const scope = {
-    storeType: req.query.storeType || req.user?.storeType || "hotel",
-    storeId: req.query.storeId || req.user?.storeId || "hotel",
-  };
+  const scope = requireRealtimeScope(req);
   // Find the active ("booked") lodging booking for this room within
   // scope. Falls through to a 404 if no such booking exists — protects
   // against a cashier double-clicking checkout (the second click sees
@@ -1256,6 +1318,7 @@ app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
   if (!tableId) {
     return res.status(400).json({ error: "tableId is required" });
   }
+  const scope = requireRealtimeScope(req);
   const payload = req.body || {};
   const tables = (await hotelQueries.getSlice("tables")) || [];
   const idx = tables.findIndex(
@@ -1276,8 +1339,7 @@ app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
     realtimeHub.buildHotelEvent({
       action: "table_updated",
       kind: "table",
-      storeType: req.query.storeType,
-      storeId: req.query.storeId,
+      ...scope,
       data: { tableId, table: next },
     })
   );
@@ -1298,10 +1360,7 @@ app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
 app.post("/api/hotel/tables/:id/checkout", ensureAuth, async (req, res) => {
   const tableId = String(req.params.id || "").trim();
   if (!tableId) return res.status(400).json({ error: "table id is required" });
-  const scope = {
-    storeType: req.query.storeType || req.user?.storeType || "hotel",
-    storeId: req.query.storeId || req.user?.storeId || "hotel",
-  };
+  const scope = requireRealtimeScope(req);
   const existing = await hotelBookingsQueries.findByRefId(
     "dining",
     tableId,
@@ -1329,6 +1388,7 @@ app.post("/api/hotel/tables/:id/checkout", ensureAuth, async (req, res) => {
 });
 
 app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+  const scope = requireRealtimeScope(req);
   const { tableId } = req.params;
   const payload = req.body || {};
   const bills = await hotelQueries.getSlice("dining-bills");
@@ -1351,8 +1411,7 @@ app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
     realtimeHub.buildHotelEvent({
       action: "live_bill_updated",
       kind: "live_bill",
-      storeType: req.query.storeType,
-      storeId: req.query.storeId,
+      ...scope,
       data: { tableId, bill: next },
     })
   );
@@ -1360,6 +1419,7 @@ app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
 });
 
 app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+  const scope = requireRealtimeScope(req);
   const { tableId } = req.params;
   // Capture the bill before deletion so other connected devices can
   // promote the finalized menu items into their own Live Bill cart
@@ -1377,8 +1437,7 @@ app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
     realtimeHub.buildHotelEvent({
       action: "live_bill_cleared",
       kind: "live_bill",
-      storeType: req.query.storeType,
-      storeId: req.query.storeId,
+      ...scope,
       data: { tableId, bill: billBeforeClear },
     })
   );
@@ -1828,7 +1887,7 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
             movement: { source: "invoice-checkout", invoiceNo: invoice.invoiceNo, productId, type: "out", quantity: line.qty || line.quantity || 0 },
             product: { id: product.id, name: product.name, stock, lowStock },
             crossedLowStock: true,
-            scope,
+            scope: effectiveScope,
           })
         );
       }
@@ -2517,7 +2576,7 @@ app.get("/api/stock-movements", ensureAuth, async (req, res) => {
 
 app.post("/api/stock-movements", ensureAuth, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
-  const scope = getInvScope(req);
+  const scope = requireRealtimeScope(req);
   const movement = await inventoryQueries.createStockMovement(
     { ...(req.body || {}), createdBy: req.user.id },
     scope
@@ -3005,10 +3064,11 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
   // sync (expenses, notifications, customer-credits).
   if (resource === "orders" || resource === "services") {
     try {
+      const eventScope = requireRealtimeScope(req, created);
       realtimeHub.publish(
         resource === "orders"
-          ? realtimeHub.buildOrderEvent({ action: "created", order: created, scope })
-          : realtimeHub.buildServiceEvent({ action: "created", service: created, scope })
+          ? realtimeHub.buildOrderEvent({ action: "created", order: created, scope: eventScope })
+          : realtimeHub.buildServiceEvent({ action: "created", service: created, scope: eventScope })
       );
     } catch (e) {
       console.warn(`[sse] ${resource} create publish failed:`, e.message);
@@ -3117,10 +3177,11 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   // order, rate change on a service, etc.).
   if (resource === "orders" || resource === "services") {
     try {
+      const eventScope = requireRealtimeScope(req, updated);
       realtimeHub.publish(
         resource === "orders"
-          ? realtimeHub.buildOrderEvent({ action: "updated", order: updated, scope })
-          : realtimeHub.buildServiceEvent({ action: "updated", service: updated, scope })
+          ? realtimeHub.buildOrderEvent({ action: "updated", order: updated, scope: eventScope })
+          : realtimeHub.buildServiceEvent({ action: "updated", service: updated, scope: eventScope })
       );
     } catch (e) {
       console.warn(`[sse] ${resource} update publish failed:`, e.message);
@@ -3139,11 +3200,12 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
     });
   }
   const scope = getRequestScope(req);
+  let existing;
   if (typeof mysqlQueries.findByIdScoped === "function") {
-    const existing = await mysqlQueries.findByIdScoped(id, scope);
+    existing = await mysqlQueries.findByIdScoped(id, scope);
     if (!existing) return res.status(404).json({ error: "Not found" });
   } else {
-    const existing = await mysqlQueries.findById(id);
+    existing = await mysqlQueries.findById(id);
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const deleted = await mysqlQueries.deleteById(id);
@@ -3151,17 +3213,18 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   // immediately instead of waiting for the next poll cycle.
   if (resource === "orders" || resource === "services") {
     try {
+      const eventScope = requireRealtimeScope(req, existing);
       realtimeHub.publish(
         resource === "orders"
           ? realtimeHub.buildOrderEvent({
               action: "deleted",
               order: { id: Number(id) },
-              scope,
+              scope: eventScope,
             })
           : realtimeHub.buildServiceEvent({
               action: "deleted",
               service: { id: Number(id) },
-              scope,
+              scope: eventScope,
             })
       );
     } catch (e) {

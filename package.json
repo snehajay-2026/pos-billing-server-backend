@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test:realtime": "node --test realtime/sse.authorization.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

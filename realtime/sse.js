@@ -10,29 +10,142 @@
 
 const hub = require("./hub");
 
-// Default channel: ALL. Pass ?storeType=hotel&storeId=hotel to scope.
-const buildDefaultChannel = ({ storeType, storeId }) => {
-  // Super Owner (no specific storeType in user record) or query override
-  // targeting a specific store → join every per-store channel for that
-  // store plus the global channel so cross-device sync stays in sync.
-  if (storeType) {
-    return [
-      hub.CHANNELS.BOOKING(storeType, storeId),
-      hub.CHANNELS.HOTEL(storeType, storeId),
-      hub.CHANNELS.INVOICE(storeType, storeId),
-      hub.CHANNELS.STOCK(storeType, storeId),
-      hub.CHANNELS.SHIFT(storeType, storeId),
-      // F2: orders + services channels joined alongside the others so
-      // service-store realtime works the same way bookings / invoices do.
-      hub.CHANNELS.ORDER(storeType, storeId),
-      hub.CHANNELS.SERVICE(storeType, storeId),
-      hub.CHANNELS.ALL(),
-    ];
+const SUPER_OWNER = "SUPER_OWNER";
+const forbidden = (message) => {
+  const error = new Error(message);
+  error.status = 403;
+  return error;
+};
+
+const scalarQueryValue = (value) => {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    return String(value[0] || "").trim();
   }
-  return [hub.CHANNELS.ALL()];
+  return value == null ? "" : String(value).trim();
+};
+
+const queryValue = (query, key) => {
+  const provided = Object.prototype.hasOwnProperty.call(query || {}, key);
+  if (!provided) return { provided: false, invalid: false, value: "" };
+  const raw = query[key];
+  if (Array.isArray(raw) && raw.length !== 1) {
+    return { provided: true, invalid: true, value: "" };
+  }
+  return { provided: true, invalid: false, value: scalarQueryValue(raw) || "" };
+};
+
+const hasQueryValue = (query, key) => {
+  const parameter = queryValue(query, key);
+  return parameter.provided && (parameter.invalid || parameter.value !== "");
+};
+
+// Resolve the SSE scope from the authenticated session, not from client input.
+// A SUPER_OWNER may retain the existing platform-wide stream or explicitly
+// narrow it to a store. Every other role is bound to req.user's store scope;
+// query parameters are only hints and can never widen that authorization.
+const resolveAuthorizedScope = (req) => {
+  const user = req && req.user;
+  if (!user) throw forbidden("Authenticated user is required for realtime events");
+
+  const query = req.query || {};
+  const role = String(user.role || "").toUpperCase();
+  const requestedStoreType = queryValue(query, "storeType");
+  const requestedStoreId = queryValue(query, "storeId");
+  const queryStoreType = requestedStoreType.value;
+  const queryStoreId = requestedStoreId.value;
+
+  // There is no branch_id/access-list model in the current users schema.
+  // Reject any branch parameter, including ambiguous arrays, rather than
+  // pretending it can authorize a branch or silently widening a store-level
+  // subscription.
+  if (hasQueryValue(query, "branchId")) {
+    throw forbidden("Branch-scoped realtime access is not supported");
+  }
+  if (requestedStoreType.invalid || requestedStoreId.invalid) {
+    throw forbidden("Realtime store scope parameters must be single values");
+  }
+
+  if (role === SUPER_OWNER) {
+    // No storeType is the deliberate platform-wide SUPER_OWNER mode. A
+    // storeId without a storeType is ambiguous and must not select a scope.
+    if (!queryStoreType) {
+      if (queryStoreId) {
+        throw forbidden("storeType is required when selecting a store");
+      }
+      return {
+        storeType: null,
+        storeId: null,
+        role,
+        isGlobal: true,
+      };
+    }
+
+    return {
+      storeType: queryStoreType,
+      storeId: queryStoreId || queryStoreType,
+      role,
+      isGlobal: false,
+    };
+  }
+
+  const storeType = scalarQueryValue(user.storeType);
+  const storeId = scalarQueryValue(user.storeId) || storeType;
+  if (!storeType || !storeId) {
+    throw forbidden("Authenticated user has no authorized store scope");
+  }
+
+  return {
+    storeType,
+    storeId,
+    role,
+    isGlobal: false,
+  };
+};
+
+// Build only the channels authorized by resolveAuthorizedScope(). The global
+// wildcard is intentionally available to an unscoped SUPER_OWNER only.
+const buildDefaultChannel = ({ storeType, storeId, isGlobal }) => {
+  if (isGlobal) return [hub.CHANNELS.ALL()];
+
+  return [
+    hub.CHANNELS.BOOKING(storeType, storeId),
+    hub.CHANNELS.HOTEL(storeType, storeId),
+    hub.CHANNELS.INVOICE(storeType, storeId),
+    hub.CHANNELS.STOCK(storeType, storeId),
+    hub.CHANNELS.SHIFT(storeType, storeId),
+    hub.CHANNELS.ORDER(storeType, storeId),
+    hub.CHANNELS.SERVICE(storeType, storeId),
+  ];
+};
+
+const buildAuthorizedChannels = (req) =>
+  buildDefaultChannel(resolveAuthorizedScope(req));
+
+const eventMatchesChannels = (channels, event, scope) => {
+  if (!event) return false;
+  if (scope?.isGlobal && channels.includes(hub.CHANNELS.ALL())) return true;
+  if (!scope?.storeType || !scope?.storeId) return false;
+  return (
+    channels.includes(event.channel) &&
+    String(event.storeType || "") === String(scope.storeType) &&
+    String(event.storeId || "") === String(scope.storeId)
+  );
 };
 
 const sseHandler = (req, res) => {
+  let scope;
+  try {
+    // ensureAuth normally supplies req.user at the route boundary. Keep this
+    // check here too so direct reuse of the handler fails closed.
+    scope = resolveAuthorizedScope(req);
+  } catch (error) {
+    const status = Number(error.status) || 403;
+    return res.status(status).json({ error: error.message });
+  }
+
+  const channels = buildDefaultChannel(scope);
+
   // SSE response headers.
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -55,15 +168,13 @@ const sseHandler = (req, res) => {
 
   // Initial hello + recent-event replay so the client catches up
   // immediately on connect.
-  const channels = buildDefaultChannel({ storeType: req.query.storeType, storeId: req.query.storeId });
-
   res.write(`event: hello\ndata: ${JSON.stringify({ channels, ts: Date.now() })}\n\n`);
 
-  // Replay any events from the last RECENT_LIMIT that match a subscribed
-  // channel — covers the case where an event fired between the page
-  // load and the SSE handshake.
+  // Replay only events authorized by this connection. Global replay is
+  // possible only because resolveAuthorizedScope() granted SUPER_OWNER's
+  // platform-wide mode; scoped users match their explicit channels only.
   for (const ev of hub.recentEvents) {
-    if (channels.includes(ev.channel)) {
+    if (eventMatchesChannels(channels, ev, scope)) {
       res.write(`event: ${ev.kind || "message"}\ndata: ${JSON.stringify(ev)}\n\n`);
     }
   }
@@ -71,6 +182,7 @@ const sseHandler = (req, res) => {
   // Subscribe to each channel.
   const unsubscribes = channels.map((channel) =>
     hub.subscribe(channel, (event) => {
+      if (!eventMatchesChannels(channels, event, scope)) return;
       try {
         res.write(`event: ${event.kind || "message"}\ndata: ${JSON.stringify(event)}\n\n`);
       } catch {
@@ -101,3 +213,7 @@ const sseHandler = (req, res) => {
 };
 
 module.exports = sseHandler;
+module.exports.resolveAuthorizedScope = resolveAuthorizedScope;
+module.exports.buildDefaultChannel = buildDefaultChannel;
+module.exports.buildAuthorizedChannels = buildAuthorizedChannels;
+module.exports.eventMatchesChannels = eventMatchesChannels;
