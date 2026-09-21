@@ -158,6 +158,45 @@ test("Store A subscribers cannot receive Store B events for every realtime event
   assert.equal(receivedGlobal.length, kinds.length * 2);
 });
 
+// F7: customer approval / rejection events are scoped to the same channel
+// as regular customer writes (CHANNELS.CUSTOMER). Verify that the new
+// `action: 'approved' | 'rejected'` labels (which the route uses for SSE
+// invalidation) flow through eventMatchesChannels the same way as the
+// legacy 'created' / 'updated' / 'deleted' actions.
+test("customer approval and rejection events are store-scoped like other customer events", () => {
+  const channels = channelsFor("service", "A");
+  const channel = hub.CHANNELS.CUSTOMER("service", "A");
+  const wrongChannel = hub.CHANNELS.CUSTOMER("service", "B");
+
+  for (const action of ["created", "updated", "deleted", "approved", "rejected"]) {
+    const good = {
+      kind: "customer",
+      action,
+      channel,
+      storeType: "service",
+      storeId: "A",
+      customer: { id: 1 },
+    };
+    const wrongStore = { ...good, channel: wrongChannel, storeId: "B" };
+    const wrongPayload = { ...good, storeId: "B" };
+    assert.equal(
+      eventMatchesChannels(channels, good, { storeType: "service", storeId: "A" }),
+      true,
+      `customer ${action} in Store A must match Store A subscribers`
+    );
+    assert.equal(
+      eventMatchesChannels(channels, wrongStore, { storeType: "service", storeId: "A" }),
+      false,
+      `customer ${action} on the Store B channel must not match Store A subscribers`
+    );
+    assert.equal(
+      eventMatchesChannels(channels, wrongPayload, { storeType: "service", storeId: "A" }),
+      false,
+      `customer ${action} with mismatched storeId metadata must not match Store A subscribers`
+    );
+  }
+});
+
 test("live delivery matching rejects mismatched event metadata", () => {
   const channels = channelsFor("service", "A");
   const channel = hub.CHANNELS.INVOICE("service", "A");

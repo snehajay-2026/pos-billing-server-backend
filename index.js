@@ -39,6 +39,7 @@ const {
   findAuthorizedInvoiceByNo,
   getAuthorizedInvoiceScope,
 } = require("./lib/invoice-authorization");
+const { resolveBillableCustomer } = require("./lib/billable-customer");
 
 // Map of MySQL-backed resources to their query modules. The handlers
 // below check this map and short-circuit to the queries module if found.
@@ -1558,6 +1559,23 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
     }
   }
 
+  // Customer linkage validation: if the cashier selected a customer in
+  // the POS UI, it must (a) belong to this store and (b) be approved.
+  // Cross-store / pending / rejected / shape-bad ids are rejected with a
+  // 4xx. A missing customerId is preserved as the walking-customer path.
+  // Server is the source of truth — never trusts client-supplied
+  // approval status or store scope.
+  let validatedCustomerId = null;
+  try {
+    const validated = await resolveBillableCustomer(
+      invoice.customerId,
+      effectiveScope
+    );
+    validatedCustomerId = validated ? validated.id : null;
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+
   try {
     // Wrap INSERT + coupon usage-count bump in one transaction. If the
     // coupon is already at its cap, incrementRedemption() returns null
@@ -1578,8 +1596,9 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
       // transaction; otherwise we'd have a race where the invoice
       // commits but the usage bump hadn't yet. Pass `effectiveScope`
       // (which carries `shiftId`) so the row is linked to the cashier's
-      // active shift.
-      return invoicesQueries.create(invoice, effectiveScope, conn);
+      // active shift. The 4th arg is the validated customer id —
+      // `null` keeps the walking-customer behavior.
+      return invoicesQueries.create(invoice, effectiveScope, conn, validatedCustomerId);
     });
     if (!saved) {
       return res.status(500).json({ error: "Failed to persist invoice" });
@@ -1817,6 +1836,22 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
 
+  // Customer linkage validation: same-store + approved-only guard. The
+  // helper throws with `.status` set when the id is missing (404),
+  // cross-store (404), pending (422), rejected (422), or malformed
+  // (400). A null/undefined customerId returns null and the walking-
+  // customer path is preserved. Server is the source of truth.
+  let validatedCustomerId = null;
+  try {
+    const validated = await resolveBillableCustomer(
+      invoice.customerId,
+      effectiveScope
+    );
+    validatedCustomerId = validated ? validated.id : null;
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+
   try {
     // Atomic: stock decrement + invoice INSERT + coupon usage-count bump.
     // Any failure rolls back the whole batch — no half-saved invoice and
@@ -1839,12 +1874,15 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
       // same change set) so it joins the same transaction. Without it
       // the stock decrement + invoice INSERT would commit on a separate
       // pool connection and could partially apply. Pass
-      // `effectiveScope` so the saved invoice carries shift_id.
+      // `effectiveScope` so the saved invoice carries shift_id. The
+      // 5th arg is the validated customer id — `null` keeps the
+      // walking-customer behavior.
       return invoicesQueries.createWithStockDecrement(
         invoice,
         resolveCheckoutQuantity,
         effectiveScope,
-        conn
+        conn,
+        validatedCustomerId
       );
     });
     // Refresh the shift's cached total_sales so the close-shift dialog
@@ -1999,6 +2037,11 @@ const attachShiftContext = async (req, scope) => {
   };
 };
 
+// resolveBillableCustomer lives in ./lib/billable-customer.js so it
+// can be unit-tested without spinning up the full Express app. See
+// lib/billable-customer.js for the rules it enforces (same-store +
+// approved-only).
+//
 // authorizeShiftAccess: per-row scope check for /api/shifts/:shiftId
 // routes. Cashiers can only see/operate on their own shifts. Admins
 // see all shifts in the same store; Super-Owner sees everything.
@@ -2914,7 +2957,8 @@ app.post("/api/orders/:id/invoice", ensureAuth, async (req, res) => {
       const created = await invoicesQueries.create(
         invoice,
         effectiveScope,
-        conn
+        conn,
+        null // service-billing does not link a customer record
       );
       if (!created) {
         const err = new Error("Failed to persist invoice");
@@ -3029,6 +3073,113 @@ app.delete("/api/products/:id", ensureAuth, async (req, res) => {
   return res.json({ ok });
 });
 
+// F7: Cashier-submits / Admin-approves customer workflow.
+//
+// POST /api/customers/:id/approve
+//   Body: { status: "approved" | "rejected", reason?: string }
+//
+// Role-gated: only SUPER_OWNER / ADMIN / STORE_ADMIN can decide. Cashiers
+// are rejected here (not merely hidden in the UI) so a hand-crafted
+// fetch from a cashier session can't drive a status change. Same-branch
+// authorization is enforced via findByIdScopedForManage, which drops the
+// `_user_email` filter for admin callers so they can decide on a customer
+// any staff member submitted.
+//
+// Status transitions are atomic: the query helper performs a conditional
+// UPDATE gated on approval_status='pending' inside withTransaction, so
+// two admin tabs clicking Approve at the same time produce exactly one
+// writer and the loser receives 409 with the current status in the body.
+//
+// Declared BEFORE the generic `app.post("/api/:resource", ...)` handler so
+// Express matches this route first.
+const CUSTOMER_APPROVER_ROLES = ["SUPER_OWNER", "ADMIN", "STORE_ADMIN"];
+
+app.post("/api/customers/:id/approve", ensureAuth, async (req, res) => {
+  const { id } = req.params;
+  const role = String(req.user?.role || "").toUpperCase();
+  if (!CUSTOMER_APPROVER_ROLES.includes(role)) {
+    return res.status(403).json({
+      error: "Only Admin or Branch Admin can approve or reject customers",
+    });
+  }
+  const body = req.body || {};
+  const status = String(body.status || "").toLowerCase();
+  const reason = typeof body.reason === "string" ? body.reason : "";
+  if (!["approved", "rejected"].includes(status)) {
+    return res.status(400).json({ error: "status must be 'approved' or 'rejected'" });
+  }
+  if (status === "rejected" && !reason.trim()) {
+    return res.status(400).json({ error: "A rejection reason is required" });
+  }
+
+  const scope = getRequestScope(req);
+  let existing;
+  try {
+    existing = await customersQueries.findByIdScopedForManage(id, scope);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message });
+  }
+  if (!existing) return res.status(404).json({ error: "Customer not found" });
+
+  let updated;
+  try {
+    updated = await customersQueries.approve(
+      id,
+      { status, reason: reason.trim() },
+      { email: req.user?.email || null, role }
+    );
+  } catch (err) {
+    const code = err.status || 500;
+    return res.status(code).json({
+      error: err.message,
+      ...(err.code ? { code: err.code } : {}),
+      ...(err.currentStatus ? { currentStatus: err.currentStatus } : {}),
+    });
+  }
+
+  // Audit trail: append-only recent-activity entry so the admin decision
+  // shows up in the existing RecentActivity.jsx feed without any frontend
+  // wiring change.
+  try {
+    await auditLogQueries.append({
+      userId: req.user?.id || null,
+      action: status === "approved" ? "customer.approved" : "customer.rejected",
+      entityType: "customer",
+      entityId: String(updated.id),
+      payload: {
+        userEmail: req.user?.email || null,
+        userRole: role,
+        storeType: scope.storeType || null,
+        storeId: scope.storeId || null,
+        from: "pending",
+        to: updated.approvalStatus,
+        ...(updated.rejectionReason ? { reason: updated.rejectionReason } : {}),
+      },
+      ip: req.ip || null,
+    });
+  } catch (e) {
+    console.warn("[audit-log] customer approval append failed:", e.message);
+  }
+
+  // Publish the SSE customer event so other tabs in the same store refresh
+  // their list. The action is just an invalidation — the API is
+  // authoritative; the event body still carries only { id } per PII rules.
+  try {
+    const realtimeScope = requireRealtimeScope(req, updated);
+    realtimeHub.publish(
+      realtimeHub.buildCustomerEvent({
+        action: updated.approvalStatus,
+        customer: updated,
+        scope: realtimeScope,
+      })
+    );
+  } catch (e) {
+    console.warn("[sse] customer approval publish failed:", e.message);
+  }
+
+  return res.json(updated);
+});
+
 app.get("/api/:resource", ensureAuth, async (req, res) => {
   const { resource } = req.params;
   // Every resource in this codebase has a MySQL-backed query module;
@@ -3087,6 +3238,15 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
     // Some query modules only expose findById (no scope variant). Fall
     // back to that — no scope enforcement, matching the JSON path.
     existing = await mysqlQueries.findById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else if (
+    resource === "customers" &&
+    typeof mysqlQueries.findByIdScopedForManage === "function"
+  ) {
+    // F7: Admin/Branch Admin can edit any same-branch customer (e.g. the
+    // cashier's pending submission). Cashiers keep the email-restricted
+    // findByIdScoped so they cannot mutate admin-owned rows.
+    existing = await mysqlQueries.findByIdScopedForManage(id, scope);
     if (!existing) return res.status(404).json({ error: "Not found" });
   } else {
     existing = await mysqlQueries.findByIdScoped(id, scope);
@@ -3189,7 +3349,15 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   }
   const scope = getRequestScope(req);
   let existing;
-  if (typeof mysqlQueries.findByIdScoped === "function") {
+  if (
+    resource === "customers" &&
+    typeof mysqlQueries.findByIdScopedForManage === "function"
+  ) {
+    // F7: same manage-wide lookup as PUT — admin can delete any
+    // same-branch customer, cashiers keep the email-restricted variant.
+    existing = await mysqlQueries.findByIdScopedForManage(id, scope);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+  } else if (typeof mysqlQueries.findByIdScoped === "function") {
     existing = await mysqlQueries.findByIdScoped(id, scope);
     if (!existing) return res.status(404).json({ error: "Not found" });
   } else {
@@ -3237,15 +3405,25 @@ const startServer = async () => {
   // self-healing for additive changes the app code expects to read/write
   // (e.g. invoices.status — without it, the Clear/Cancel PUT silently
   // drops the value and the row returns without a status).
+  let migrationResult;
   try {
-    const result = await runRuntimeMigrations();
-    if (result.applied || result.denied) {
+    migrationResult = await runRuntimeMigrations();
+    if (migrationResult.applied || migrationResult.denied) {
       console.log(
-        `[startup] runtime-migrations: applied=${result.applied} skipped=${result.skipped} denied=${result.denied}`
+        `[startup] runtime-migrations: applied=${migrationResult.applied} skipped=${migrationResult.skipped} denied=${migrationResult.denied}`
       );
     }
   } catch (err) {
     console.warn("[startup] runtime-migrations threw:", err.message);
+    migrationResult = {
+      applied: 0,
+      skipped: 0,
+      denied: 0,
+      deniedCritical: [],
+      deniedNames: [],
+      unconfirmedCritical: [],
+      unconfirmedNames: [],
+    };
   }
 
   // F6: CREATE TABLE migrations for new feature tables. Same pattern as
@@ -3262,6 +3440,71 @@ const startServer = async () => {
     }
   } catch (err) {
     console.warn("[startup] runtime-table-migrations threw:", err.message);
+  }
+
+  // F8 hard-startup-gate. A small set of migrations is correctness-
+  // critical (see CRITICAL_MIGRATIONS in db/runtime-migrations.js):
+  //   - `invoices.customer_id` column — without it, the cashier's
+  //     `customerId` silently drops on every POST and the link between
+  //     invoice and CRM record is lost.
+  //   - `idx_invoices_customer` index — without it, the customer-
+  //     statement lookup degrades to a full table scan.
+  // If the app user lacks ALTER and any of those didn't apply, refuse
+  // to start. We do NOT block on unrelated denials — those continue to
+  // soft-warn so operators can address them separately.
+  if (
+    migrationResult &&
+    Array.isArray(migrationResult.deniedCritical) &&
+    migrationResult.deniedCritical.length > 0
+  ) {
+    const denied = migrationResult.deniedCritical;
+    console.error(
+      `\n[startup] ABORTING — ${denied.length} critical schema migration(s) ` +
+        `could not be applied (app user lacks ALTER rights):\n`
+    );
+    for (const entry of denied) {
+      console.error(
+        `  • ${entry.name}\n    Run this once as a DBA:\n      ${entry.ddl}\n`
+      );
+    }
+    console.error(
+      "[startup] Backend refused to start. The above migrations are " +
+        "required for invoice ↔ customer linkage correctness. Re-run after " +
+        "applying them, or grant ALTER on the affected tables to the app user."
+    );
+    process.exit(1);
+  }
+
+  // F8 hard-startup-gate (probe-failure leg). If the information_schema
+  // probe failed TWICE in a row for a critical migration, the runner
+  // cannot tell whether the column/index exists. Refusing to start is
+  // safer than silently dropping the column or blindly running an
+  // ALTER — either of which would corrupt the deployed schema state or
+  // mask the missing migration. The probe-failure check runs AFTER the
+  // denied check so operators see both failure modes in separate boot
+  // attempts if they ever co-occur.
+  if (
+    migrationResult &&
+    Array.isArray(migrationResult.unconfirmedCritical) &&
+    migrationResult.unconfirmedCritical.length > 0
+  ) {
+    const unconfirmed = migrationResult.unconfirmedCritical;
+    console.error(
+      `\n[startup] ABORTING — ${unconfirmed.length} critical schema probe(s) ` +
+        `failed twice at startup; cannot confirm whether the column/index exists.\n` +
+        `This is usually a transient DB connectivity issue or the app user ` +
+        `lacks SELECT on information_schema. Re-run after verifying DB access.\n`
+    );
+    for (const entry of unconfirmed) {
+      console.error(
+        `  • ${entry.name}\n    Run this once as a DBA to guarantee the schema state:\n      ${entry.ddl}\n`
+      );
+    }
+    console.error(
+      "[startup] Backend refused to start. Verify DB connectivity and that " +
+        "the app user can SELECT from information_schema, then re-run."
+    );
+    process.exit(1);
   }
 
   // Sessions live in MySQL (sessions table) — no in-memory load needed.

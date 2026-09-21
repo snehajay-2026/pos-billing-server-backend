@@ -28,33 +28,42 @@ const { buildInvoiceNoScope } = require("../../lib/invoice-scope");
 // to link invoices to the cashier's drawer session — without it the
 // shift summary endpoint can't aggregate bill count / sales / GST /
 // discount. Same probe pattern.
+//
+// `invoices.customer_id` is added by `runtime-migrations.js` (F8) so the
+// invoice row can reference the CRM record that paid for it. Nullable
+// because walking-customer invoices don't link to anyone. Same probe
+// pattern.
 let hasGeneratedAtColumn = false;
 let hasShiftIdColumn = false;
+let hasCustomerIdColumn = false;
 (async () => {
   try {
     const [rows] = await query(
       `SELECT
          SUM(CASE WHEN column_name = 'generated_at' THEN 1 ELSE 0 END) AS n_gen,
-         SUM(CASE WHEN column_name = 'shift_id'     THEN 1 ELSE 0 END) AS n_shift
+         SUM(CASE WHEN column_name = 'shift_id'     THEN 1 ELSE 0 END) AS n_shift,
+         SUM(CASE WHEN column_name = 'customer_id'  THEN 1 ELSE 0 END) AS n_cust
        FROM information_schema.columns
        WHERE table_schema = DATABASE() AND table_name = 'invoices'`
     );
     hasGeneratedAtColumn = Number((rows && rows[0] && rows[0].n_gen) || 0) > 0;
     hasShiftIdColumn = Number((rows && rows[0] && rows[0].n_shift) || 0) > 0;
+    hasCustomerIdColumn = Number((rows && rows[0] && rows[0].n_cust) || 0) > 0;
   } catch (e) {
     hasGeneratedAtColumn = false;
     hasShiftIdColumn = false;
+    hasCustomerIdColumn = false;
   }
 })();
 
 // Single source of truth for the SELECT column list. Includes the
-// optional `generated_at` + `shift_id` columns when the migrations have
-// been applied; falls back to the pre-migration column set otherwise so
-// a backend running against an un-migrated DB doesn't 500 every invoice
-// fetch. Implemented as a getter so the value reflects the post-probe
-// flag (the probe is async and resolves after this module finishes
-// evaluating — so a `const` snapshot taken at module-load time would
-// permanently pin the flags to false).
+// optional `generated_at` + `shift_id` + `customer_id` columns when the
+// migrations have been applied; falls back to the pre-migration column
+// set otherwise so a backend running against an un-migrated DB doesn't
+// 500 every invoice fetch. Implemented as a getter so the value
+// reflects the post-probe flag (the probe is async and resolves after
+// this module finishes evaluating — so a `const` snapshot taken at
+// module-load time would permanently pin the flags to false).
 const COLUMNS_BASE =
   "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email";
 const COLUMNS_NO_OPTIONAL =
@@ -63,13 +72,25 @@ const COLUMNS_WITH_GEN =
   `${COLUMNS_BASE}, created_at, generated_at, updated_at`;
 const COLUMNS_WITH_SHIFT =
   `${COLUMNS_BASE}, created_at, shift_id, updated_at`;
+const COLUMNS_WITH_CUST =
+  `${COLUMNS_BASE}, customer_id, created_at, updated_at`;
+const COLUMNS_WITH_GEN_CUST =
+  `${COLUMNS_BASE}, customer_id, created_at, generated_at, updated_at`;
+const COLUMNS_WITH_SHIFT_CUST =
+  `${COLUMNS_BASE}, customer_id, created_at, shift_id, updated_at`;
 const COLUMNS_WITH_BOTH =
   `${COLUMNS_BASE}, created_at, generated_at, shift_id, updated_at`;
+const COLUMNS_WITH_ALL =
+  `${COLUMNS_BASE}, customer_id, created_at, generated_at, shift_id, updated_at`;
 const COLUMNS = {
   get withGen() {
+    if (hasGeneratedAtColumn && hasShiftIdColumn && hasCustomerIdColumn) return COLUMNS_WITH_ALL;
     if (hasGeneratedAtColumn && hasShiftIdColumn) return COLUMNS_WITH_BOTH;
+    if (hasGeneratedAtColumn && hasCustomerIdColumn) return COLUMNS_WITH_GEN_CUST;
+    if (hasShiftIdColumn && hasCustomerIdColumn) return COLUMNS_WITH_SHIFT_CUST;
     if (hasGeneratedAtColumn) return COLUMNS_WITH_GEN;
     if (hasShiftIdColumn) return COLUMNS_WITH_SHIFT;
+    if (hasCustomerIdColumn) return COLUMNS_WITH_CUST;
     return COLUMNS_NO_OPTIONAL;
   },
 };
@@ -116,6 +137,9 @@ const rowToInvoice = (row) => {
     status: row.status || null,
     customerName: row.customer_name || null,
     customerMobile: row.customer_mobile || null,
+    // F8: nullable FK to customers.id. NULL = walking customer
+    // (preserved when no customer was attached on the bill).
+    customerId: row.customer_id != null ? Number(row.customer_id) : row.customer_id,
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
@@ -211,10 +235,17 @@ const findByInvoiceNoScoped = async (invoiceNo, scope = {}) => {
 //   resolveQty(item) — converts an item to a numeric quantity, mirroring
 //                      the existing JSON behavior (kg items use qtyKg).
 //   scope — { storeType, storeId, email } from getRequestScope(req).
+//   conn — optional transaction connection (caller wraps the stock
+//          decrement + INSERT + coupon bump together).
+//   customerId — optional numeric id linking the invoice to a customer
+//                row. The route layer is responsible for validating
+//                the id (same-store, approval_status='approved') before
+//                this helper runs — passing `null`/`undefined` here
+//                preserves the legacy walking-customer behavior.
 //
 // Returns: { invoice, updatedStock } matching the JSON path's response
 // shape so the route handler can return it verbatim.
-const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
+const createWithStockDecrement = async (invoice, resolveQty, scope, conn, customerId) => {
   const items = Array.isArray(invoice.items) ? invoice.items : [];
   if (items.length === 0) {
     const err = new Error("Invoice has no line items");
@@ -230,6 +261,13 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
   const id = Date.now();
   const updatedStock = [];
   const { customerName, customerMobile } = resolveCustomer(invoice);
+  // F8: only persist customer_id when the column actually exists. When
+  // it doesn't, drop the value silently — pre-migration DBs keep
+  // working. The route layer still validates the id, so the worst
+  // case is a "linked in the UI but not in the DB" drift, which is
+  // acceptable during the migration window.
+  const resolvedCustomerId =
+    hasCustomerIdColumn && customerId != null ? Number(customerId) : null;
 
   // If the caller already opened a transaction (e.g. /api/invoices/checkout
   // wraps stock decrement + invoice INSERT + coupon usage-count bump
@@ -322,6 +360,14 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn) => {
       insertVals += ", ?";
       tail.push(shiftId);
     }
+    if (hasCustomerIdColumn) {
+      // Place customer_id near the rest of the customer metadata
+      // (right after customer_mobile) so the column order matches the
+      // schema comment in runtime-migrations.js.
+      insertCols += ", customer_id";
+      insertVals += ", ?";
+      tail.push(resolvedCustomerId);
+    }
     insertCols += ", updated_at";
     insertVals += ", NOW(3)";
     const insertParams = [
@@ -387,18 +433,26 @@ const list = async (scope) => {
 // transaction connection so it can join withTransaction() blocks
 // (e.g. atomic coupon usage-count bump). When omitted, the call uses
 // the shared pool and behaves exactly as before.
-const create = async (item, scope, conn) => {
+//
+// `customerId` is the validated id from the route layer (same-store,
+// approval_status='approved'). `null`/`undefined` preserves the
+// walking-customer behavior. The query module never trusts a raw
+// body value — it only writes the column when the route passed a
+// validated id.
+const create = async (item, scope, conn, customerId) => {
   const id = Date.now();
   const { customerName, customerMobile } = resolveCustomer(item);
   const generatedAtSql = item.generatedAt ? toMysqlDatetime(item.generatedAt) : null;
   // Same dynamic INSERT shape as `createWithStockDecrement` — the
-  // optional `generated_at` + `shift_id` columns are only referenced
-  // when the migrations have run.
+  // optional `generated_at` + `shift_id` + `customer_id` columns are
+  // only referenced when the migrations have run.
   const shiftId =
     (item.shiftId != null ? Number(item.shiftId) : null) ||
     (item.shift_id != null ? Number(item.shift_id) : null) ||
     (scope.shiftId != null ? Number(scope.shiftId) : null) ||
     null;
+  const resolvedCustomerId =
+    hasCustomerIdColumn && customerId != null ? Number(customerId) : null;
   const insertBaseCols =
     "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
   const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
@@ -414,6 +468,11 @@ const create = async (item, scope, conn) => {
     insertCols += ", shift_id";
     insertVals += ", ?";
     tail.push(shiftId);
+  }
+  if (hasCustomerIdColumn) {
+    insertCols += ", customer_id";
+    insertVals += ", ?";
+    tail.push(resolvedCustomerId);
   }
   insertCols += ", updated_at";
   insertVals += ", NOW(3)";

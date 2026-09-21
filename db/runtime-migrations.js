@@ -16,8 +16,38 @@
 // log a clear hint and return; the route handlers still install so the
 // rest of the app keeps working, and the SQL is printed for the DBA to
 // run by hand.
+//
+// F8 hard-startup-gate: a small number of migrations are CORRECTNESS
+// gates rather than performance / DX polish. If `invoices.customer_id`
+// is missing (the cashier's `customerId` would silently drop on every
+// POST) or `idx_invoices_customer` is missing (the customer-statement
+// lookup has no supporting index), the backend refuses to start so the
+// operator sees the failure at deploy time, not at request time. Other
+// denied migrations continue to soft-warn — see `CRITICAL_MIGRATIONS`
+// below for the exact list and `runRuntimeMigrations` for the gate the
+// startup path uses.
 
 const { query, pool } = require("./pool");
+
+// Names whose denial or failure must abort the backend startup. The
+// names match either the `name` field of a `MIGRATIONS` entry, or one
+// of the inline `*IdxName` constants below for the index migrations.
+// Anything not in this set continues to soft-warn — keeping the
+// original belt-and-braces behavior intact for the unrelated migrations
+// (customers.shift_id, customers.approval_status, etc.).
+const CRITICAL_MIGRATIONS = new Set([
+  // Column-add: the cashier's `customerId` would silently drop on every
+  // POST /api/invoices and /api/invoices/checkout if this column doesn't
+  // exist. Without the column, no row of an invoice with a linked
+  // customer ever sees the linkage — and the customer-statement
+  // endpoint can't return those invoices either.
+  "invoices.customer_id",
+  // Index: `WHERE customer_id = ? AND _store_type = ? AND _store_id = ?`
+  // is the customer-statement lookup. Without the index this becomes a
+  // full table scan on a rapidly-growing table. Performance-critical for
+  // correctness windows (e.g. an admin running a month-end statement).
+  "idx_invoices_customer",
+]);
 
 // One entry per additive migration. Each entry is:
 //   - name: human-readable identifier for log output
@@ -84,6 +114,74 @@ const MIGRATIONS = [
     column: "ref_id",
     ddl: "ALTER TABLE `shift_cash_movements` ADD COLUMN `ref_id` VARCHAR(128) NULL AFTER `ref_type`",
   },
+  // F7: customer approval workflow. Adds the columns needed for the
+  // Cashier-submits / Admin-approves workflow (Option B from the customer
+  // management audit). All columns are additive — the ALTER uses DEFAULT
+  // 'approved' so legacy rows surface as approved without the backfill
+  // UPDATE below.
+  {
+    name: "customers.gstin",
+    table: "customers",
+    column: "gstin",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `gstin` VARCHAR(15) NULL AFTER `notes`",
+  },
+  {
+    name: "customers.approval_status",
+    table: "customers",
+    column: "approval_status",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `approval_status` VARCHAR(16) NOT NULL DEFAULT 'approved' AFTER `gstin`",
+  },
+  {
+    name: "customers.approved_by_email",
+    table: "customers",
+    column: "approved_by_email",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `approved_by_email` VARCHAR(255) NULL AFTER `approval_status`",
+  },
+  {
+    name: "customers.approved_at",
+    table: "customers",
+    column: "approved_at",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `approved_at` DATETIME(3) NULL AFTER `approved_by_email`",
+  },
+  {
+    name: "customers.rejected_by_email",
+    table: "customers",
+    column: "rejected_by_email",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `rejected_by_email` VARCHAR(255) NULL AFTER `approved_at`",
+  },
+  {
+    name: "customers.rejected_at",
+    table: "customers",
+    column: "rejected_at",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `rejected_at` DATETIME(3) NULL AFTER `rejected_by_email`",
+  },
+  {
+    name: "customers.rejection_reason",
+    table: "customers",
+    column: "rejection_reason",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `rejection_reason` TEXT NULL AFTER `rejected_at`",
+  },
+  {
+    name: "customers.created_by_email",
+    table: "customers",
+    column: "created_by_email",
+    ddl: "ALTER TABLE `customers` ADD COLUMN `created_by_email` VARCHAR(255) NULL AFTER `rejection_reason`",
+  },
+  // F8: invoice ↔ customer linkage for the customer approval workflow.
+  // Adds a nullable BIGINT UNSIGNED `customer_id` so the invoice row can
+  // reference the CRM record that paid for it. Same data type as
+  // `customers.id` (BIGINT UNSIGNED, populated by Date.now() by the
+  // customers query helper). Nullable so legacy invoices without a
+  // selected customer keep working; the route layer treats NULL as
+  // "walking customer" and preserves existing behavior. Cross-store /
+  // pending / rejected customer ids are rejected at the route layer
+  // before this INSERT ever runs.
+  {
+    name: "invoices.customer_id",
+    table: "invoices",
+    column: "customer_id",
+    ddl: "ALTER TABLE `invoices` ADD COLUMN `customer_id` BIGINT UNSIGNED NULL AFTER `customer_mobile`",
+  },
 ];
 
 const isDenied = (err) => {
@@ -95,30 +193,110 @@ const isDenied = (err) => {
   return /command denied/i.test(String(err.message || ""));
 };
 
+// F8 hard-startup-gate (probe-failure leg). For CORRECTNESS-CRITICAL
+// migrations, a single failed information_schema probe could be a
+// transient infra blip OR a sign that the schema state cannot be read
+// at all (e.g. permission revoked on information_schema itself, or the
+// connection is mid-failover). We re-probe once. If the second probe
+// also fails we cannot tell whether the column/index exists, so the
+// safe choice is to refuse to start rather than silently proceed. The
+// re-probe is boot-time only — there are no per-request probes — and it
+// only runs on critical entries, so the total cost is at most one extra
+// round-trip per critical migration per backend boot.
+
+const probeColumn = async (table, column) => {
+  const [rows] = await pool.query(
+    `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+    [process.env.DB_NAME, table, column]
+  );
+  return { present: !!(rows && rows.length) };
+};
+
+const probeIndex = async (table, indexName) => {
+  const [rows] = await pool.query(
+    `SELECT INDEX_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
+    [process.env.DB_NAME, table, indexName]
+  );
+  return { present: !!(rows && rows.length) };
+};
+
 const runRuntimeMigrations = async () => {
   if (!process.env.DB_NAME) {
     // Pool would have thrown already; this is just a belt-and-braces guard.
     console.warn("[runtime-migrations] DB_NAME not set; skipping.");
-    return { applied: 0, skipped: 0, denied: 0 };
+    return {
+      applied: 0,
+      skipped: 0,
+      denied: 0,
+      deniedCritical: [],
+      deniedNames: [],
+      unconfirmedCritical: [],
+      unconfirmedNames: [],
+    };
   }
 
   let applied = 0;
   let skipped = 0;
   let denied = 0;
+  // F8: track WHICH migrations were denied so the startup path can abort
+  // when the denial lands on a correctness gate (see CRITICAL_MIGRATIONS).
+  // Each entry captures the failure reason and the DBA-actionable DDL the
+  // operator needs to run by hand — the same hint that was already logged
+  // inline, but kept here in a structured form so the abort message can
+  // echo it back without duplicating log parsing.
+  const deniedCritical = [];
+  const deniedNames = [];
+  // F8: track critical migrations whose information_schema probe failed
+  // TWICE in a row. We cannot tell whether the column/index exists, so
+  // the safe choice is to abort startup rather than silently dropping
+  // the column or running the ALTER blind. The startup gate (in
+  // index.js startServer) reads this field and exits non-zero.
+  const unconfirmedCritical = [];
+  const unconfirmedNames = [];
 
   for (const m of MIGRATIONS) {
+    const isCritical = CRITICAL_MIGRATIONS.has(m.name);
     let needs = false;
+    let probeUnconfirmed = false;
     try {
-      const [rows] = await pool.query(
-        `SELECT COLUMN_NAME FROM information_schema.COLUMNS
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
-        [process.env.DB_NAME, m.table, m.column]
-      );
-      needs = !rows || rows.length === 0;
+      const probe = await probeColumn(m.table, m.column);
+      needs = !probe.present;
     } catch (err) {
-      console.warn(`[runtime-migrations] ${m.name} inspection failed: ${err.message}`);
-      // Fail open: try the ALTER anyway; if it errors we'll surface it.
-      needs = true;
+      if (!isCritical) {
+        // Unrelated migrations keep the original fail-open behavior: log
+        // and try the ALTER anyway. If the ALTER also fails we surface
+        // that failure inline; we don't gate startup on it.
+        console.warn(`[runtime-migrations] ${m.name} inspection failed: ${err.message}`);
+        needs = true;
+      } else {
+        // Critical migration — single probe failure could be transient.
+        // Re-probe once; if the second probe also throws, the schema
+        // state is unconfirmed, so record the entry in unconfirmedCritical
+        // and skip the ALTER entirely (proceeding blind could either
+        // silently miss a missing column or ALTER a column that already
+        // exists with a different shape).
+        try {
+          const reProbe = await probeColumn(m.table, m.column);
+          needs = !reProbe.present;
+        } catch (reErr) {
+          console.warn(
+            `[runtime-migrations] ${m.name} inspection failed twice — cannot confirm schema state: ${reErr.message}`
+          );
+          probeUnconfirmed = true;
+        }
+      }
+    }
+
+    if (probeUnconfirmed) {
+      unconfirmedCritical.push({
+        name: m.name,
+        ddl: m.ddl,
+        reason: "information_schema probe failed twice at startup; schema state could not be confirmed",
+      });
+      unconfirmedNames.push(m.name);
+      continue;
     }
 
     if (!needs) {
@@ -133,6 +311,10 @@ const runRuntimeMigrations = async () => {
     } catch (err) {
       if (isDenied(err)) {
         denied += 1;
+        deniedNames.push(m.name);
+        if (CRITICAL_MIGRATIONS.has(m.name)) {
+          deniedCritical.push({ name: m.name, ddl: m.ddl, reason: err.message });
+        }
         console.warn(
           `[runtime-migrations] ${m.name} skipped — app user lacks ALTER rights. ` +
             `Run this once as a DBA:\n  ${m.ddl};`
@@ -167,6 +349,7 @@ const runRuntimeMigrations = async () => {
       } catch (err) {
         if (isDenied(err)) {
           denied += 1;
+          deniedNames.push(uniqueIdxName);
           console.warn(
             `[runtime-migrations] ${uniqueIdxName} skipped — app user lacks ALTER rights. ` +
               `Run this once as a DBA:\n  ALTER TABLE shift_cash_movements ` +
@@ -183,7 +366,152 @@ const runRuntimeMigrations = async () => {
     console.warn(`[runtime-migrations] ${uniqueIdxName} inspection failed: ${err.message}`);
   }
 
-  return { applied, skipped, denied };
+  // F7: composite index on customers for the new Pending-tab query
+  // (`WHERE _store_type = ? AND _store_id = ? AND approval_status = 'pending'`).
+  // Same belt-and-braces pattern as the shift_cash_movements unique index:
+  // probe information_schema first, log a hint if the app user lacks ALTER.
+  const customerStatusIdxName = "idx_customers_status";
+  try {
+    const [idxRows] = await pool.query(
+      `SELECT INDEX_NAME FROM information_schema.STATISTICS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1`,
+      [process.env.DB_NAME, "customers", customerStatusIdxName]
+    );
+    if (!idxRows || idxRows.length === 0) {
+      try {
+        await query(
+          "ALTER TABLE `customers` ADD KEY `idx_customers_status` (`_store_type`, `_store_id`, `approval_status`)"
+        );
+        applied += 1;
+        console.log(`[runtime-migrations] applied: ${customerStatusIdxName}`);
+      } catch (err) {
+        if (isDenied(err)) {
+          denied += 1;
+          deniedNames.push(customerStatusIdxName);
+          console.warn(
+            `[runtime-migrations] ${customerStatusIdxName} skipped — app user lacks ALTER rights. ` +
+              `Run this once as a DBA:\n  ALTER TABLE customers ` +
+              `ADD KEY idx_customers_status (_store_type, _store_id, approval_status);`
+          );
+        } else {
+          console.warn(`[runtime-migrations] ${customerStatusIdxName} failed: ${err.message}`);
+        }
+      }
+    } else {
+      skipped += 1;
+    }
+  } catch (err) {
+    console.warn(`[runtime-migrations] ${customerStatusIdxName} inspection failed: ${err.message}`);
+  }
+
+  // F8: composite index on invoices for the customer-statement lookup
+  // (`WHERE customer_id = ? AND _store_type = ? AND _store_id = ?`).
+  // Same belt-and-braces pattern as the customers status index: probe
+  // information_schema first, log a hint if the app user lacks ALTER.
+  const invoiceCustomerIdxName = "idx_invoices_customer";
+  const invoiceCustomerIdxDdl =
+    "ALTER TABLE `invoices` ADD KEY `idx_invoices_customer` (`customer_id`, `_store_type`, `_store_id`)";
+  let invoiceCustomerIdxPresent = false;
+  let invoiceCustomerIdxUnconfirmed = false;
+  try {
+    const probe = await probeIndex("invoices", invoiceCustomerIdxName);
+    invoiceCustomerIdxPresent = probe.present;
+  } catch (err) {
+    // Critical index — single probe failure could be transient. Re-probe
+    // once; if the second probe also throws, the schema state is
+    // unconfirmed, so record the entry in unconfirmedCritical and skip
+    // the ALTER entirely.
+    try {
+      const reProbe = await probeIndex("invoices", invoiceCustomerIdxName);
+      invoiceCustomerIdxPresent = reProbe.present;
+    } catch (reErr) {
+      console.warn(
+        `[runtime-migrations] ${invoiceCustomerIdxName} inspection failed twice — cannot confirm schema state: ${reErr.message}`
+      );
+      invoiceCustomerIdxUnconfirmed = true;
+      unconfirmedCritical.push({
+        name: invoiceCustomerIdxName,
+        ddl: invoiceCustomerIdxDdl + ";",
+        reason: "information_schema probe failed twice at startup; schema state could not be confirmed",
+      });
+      unconfirmedNames.push(invoiceCustomerIdxName);
+    }
+  }
+
+  if (!invoiceCustomerIdxPresent && !invoiceCustomerIdxUnconfirmed) {
+    try {
+      await query(invoiceCustomerIdxDdl);
+      applied += 1;
+      console.log(`[runtime-migrations] applied: ${invoiceCustomerIdxName}`);
+    } catch (err) {
+      if (isDenied(err)) {
+        denied += 1;
+        deniedNames.push(invoiceCustomerIdxName);
+        // F8 hard-startup-gate. The column-add `invoices.customer_id`
+        // gate is handled above; this gate catches the case where the
+        // column was added (DBA ran the migration by hand) but the
+        // supporting index is still missing. Without the index the
+        // customer-statement query degrades from index lookup to full
+        // scan; we refuse to start so the operator notices before the
+        // first end-of-month statement run.
+        if (CRITICAL_MIGRATIONS.has(invoiceCustomerIdxName)) {
+          deniedCritical.push({
+            name: invoiceCustomerIdxName,
+            ddl: invoiceCustomerIdxDdl + ";",
+            reason: err.message,
+          });
+        }
+        console.warn(
+          `[runtime-migrations] ${invoiceCustomerIdxName} skipped — app user lacks ALTER rights. ` +
+            `Run this once as a DBA:\n  ALTER TABLE invoices ` +
+            "ADD KEY idx_invoices_customer (customer_id, _store_type, _store_id);"
+        );
+      } else {
+        console.warn(`[runtime-migrations] ${invoiceCustomerIdxName} failed: ${err.message}`);
+      }
+    }
+  } else if (invoiceCustomerIdxPresent) {
+    skipped += 1;
+  }
+
+  // F7 backfill: legacy rows whose approval_status is missing/blank must
+  // surface as 'approved' so the new status filter doesn't hide them.
+  // Idempotent — only runs when the column was freshly added in this boot
+  // (detected by checking if ANY row has a NULL/blank status). When the
+  // DEFAULT 'approved' already populated every row, the UPDATE matches
+  // zero rows and is a no-op.
+  try {
+    const [statusRows] = await pool.query(
+      `SELECT COUNT(*) AS c FROM customers
+         WHERE approval_status IS NULL OR approval_status = ''`
+    );
+    const legacyNullCount = Number(statusRows && statusRows[0] && statusRows[0].c) || 0;
+    if (legacyNullCount > 0) {
+      const result = await query(
+        `UPDATE customers
+            SET approval_status = 'approved',
+                approved_by_email = COALESCE(created_by_email, _user_email),
+                approved_at = COALESCE(approved_at, created_at, NOW(3))
+          WHERE approval_status IS NULL OR approval_status = ''`
+      );
+      const affected = result && result[0] && result[0].affectedRows;
+      console.log(
+        `[runtime-migrations] customer approval_status backfill: updated ${affected || 0} legacy row(s)`
+      );
+    }
+  } catch (err) {
+    console.warn(`[runtime-migrations] customer approval_status backfill failed: ${err.message}`);
+  }
+
+  return {
+    applied,
+    skipped,
+    denied,
+    deniedCritical,
+    deniedNames,
+    unconfirmedCritical,
+    unconfirmedNames,
+  };
 };
 
 // TABLE_MIGRATIONS: idempotent CREATE TABLE IF NOT EXISTS migrations that
@@ -262,5 +590,11 @@ const runTableMigrations = async () => {
   return { applied, skipped, denied };
 };
 
-module.exports = { runRuntimeMigrations, runTableMigrations, MIGRATIONS, TABLE_MIGRATIONS };
+module.exports = {
+  runRuntimeMigrations,
+  runTableMigrations,
+  MIGRATIONS,
+  TABLE_MIGRATIONS,
+  CRITICAL_MIGRATIONS,
+};
 
