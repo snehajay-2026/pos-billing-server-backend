@@ -4,8 +4,8 @@
 // (JSON), ip, created_at.
 //
 // Read-only from the API surface (append-only on the server). Filters
-// supported: action, entityType, entityId, userId, since, until, limit,
-// offset.
+// supported: action, entityType, entityId, userId, storeType, storeId,
+// outcome, since, until, order (asc|desc), limit, offset.
 //
 // The frontend's auditLogService expects an AuditEntry shape that
 // includes method/path/statusCode/ok/errorMessage — those fields are
@@ -14,7 +14,10 @@
 //
 // Scope: SUPER_OWNER sees everything. Other roles see only their own
 // (user_id = req.user.id) entries by default. The storeType/storeId
-// scoping is not enforced here — audit logs are global per user.
+// scoping is also enforced — callers cannot widen scope by tampering
+// with query parameters; the route layer passes only the caller's
+// authorized (storeType, storeId) to this module. SUPER_OWNER may pass
+// storeType/storeId explicitly to narrow by store.
 
 const { query } = require("../pool");
 
@@ -54,7 +57,28 @@ const rowToEntry = (row) => {
 
 // === Read ==================================================================
 
-const list = async ({ userId = null, action = null, entityType = null, entityId = null, since = null, until = null, limit = 100, offset = 0 } = {}) => {
+// Allowed sort orders. Anything else falls back to "desc" so a stray query
+// param can't trigger a destructive query shape. Newest-first is the
+// default — RecentActivity's day-grouping relies on it.
+const normalizeOrder = (raw) => {
+  const v = String(raw || "").toLowerCase();
+  return v === "asc" ? "asc" : "desc";
+};
+
+const list = async ({
+  userId = null,
+  action = null,
+  entityType = null,
+  entityId = null,
+  storeType = null,
+  storeId = null,
+  outcome = null,
+  since = null,
+  until = null,
+  order = "desc",
+  limit = 100,
+  offset = 0,
+} = {}) => {
   const conds = [];
   const params = [];
   if (userId) {
@@ -73,6 +97,23 @@ const list = async ({ userId = null, action = null, entityType = null, entityId 
     conds.push("entity_id = ?");
     params.push(String(entityId));
   }
+  // storeType / storeId: the caller's scope is enforced at the route
+  // layer, so these narrow the result. payload is JSON; JSON_UNQUOTE
+  // normalises "system" / null / string-coerced values so we can compare
+  // cleanly with `= ?`.
+  if (storeType) {
+    conds.push("JSON_UNQUOTE(JSON_EXTRACT(payload, '$.storeType')) = ?");
+    params.push(String(storeType));
+  }
+  if (storeId) {
+    conds.push("JSON_UNQUOTE(JSON_EXTRACT(payload, '$.storeId')) = ?");
+    params.push(String(storeId));
+  }
+  if (outcome === "success") {
+    conds.push("JSON_EXTRACT(payload, '$.ok') = true");
+  } else if (outcome === "failed") {
+    conds.push("JSON_EXTRACT(payload, '$.ok') = false");
+  }
   if (since) {
     conds.push("created_at >= ?");
     params.push(String(since));
@@ -82,12 +123,17 @@ const list = async ({ userId = null, action = null, entityType = null, entityId 
     params.push(String(until));
   }
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 500));
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 5000));
   const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeOrder = normalizeOrder(order);
+  // Note: secondary id sort keeps the result stable when many rows share a
+  // millisecond — without it the "Load more" pagination can re-emit the
+  // same row at the boundary and skip one beyond it.
+  const directionClause = safeOrder === "asc" ? "ASC" : "DESC";
 
   const rows = await query(
     `SELECT ${COLUMNS} FROM audit_log ${where}
-     ORDER BY created_at DESC, id DESC
+     ORDER BY created_at ${directionClause}, id ${directionClause}
      LIMIT ? OFFSET ?`,
     [...params, safeLimit, safeOffset]
   );
@@ -103,6 +149,7 @@ const list = async ({ userId = null, action = null, entityType = null, entityId 
     total,
     limit: safeLimit,
     offset: safeOffset,
+    order: safeOrder,
   };
 };
 
@@ -110,7 +157,8 @@ const list = async ({ userId = null, action = null, entityType = null, entityId 
 
 // append: insert a single audit row. Used by other server-side code paths
 // (e.g. checkout, payment mark-paid) — not exposed via HTTP because the
-// frontend never POSTs audit events directly.
+// frontend never POSTs audit events directly. created_at is server-stamped
+// via NOW(3) so a clock-skewed client cannot forge a timestamp.
 const append = async ({ userId = null, action, entityType = null, entityId = null, payload = null, ip = null }) => {
   if (!action) return null;
   const json = payload ? JSON.stringify(payload) : null;
@@ -125,4 +173,7 @@ const append = async ({ userId = null, action, entityType = null, entityId = nul
 module.exports = {
   list,
   append,
+  // Exposed for tests that need to assert the SQL shape (storeType/
+  // outcome/order branches). Not part of the public surface.
+  _internal: { normalizeOrder, rowToEntry },
 };

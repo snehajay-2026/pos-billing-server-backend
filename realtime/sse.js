@@ -118,6 +118,12 @@ const buildDefaultChannel = ({ storeType, storeId, isGlobal }) => {
     hub.CHANNELS.SERVICE(storeType, storeId),
     hub.CHANNELS.CUSTOMER(storeType, storeId),
     hub.CHANNELS.CUSTOMER_CREDIT(storeType, storeId),
+    // Audit log channel — RecentActivity on admin tabs subscribes to
+    // this so audit rows recorded in another tab show up live. Routed
+    // per-(storeType, storeId) so cross-store leakage is structurally
+    // impossible (the hub only fans out to listeners on the matching
+    // channel).
+    hub.CHANNELS.AUDIT(storeType, storeId),
   ];
 };
 

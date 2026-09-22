@@ -604,6 +604,21 @@ app.post("/api/users", ensureAuth, async (req, res) => {
     // UNIQUE-constraint race
     return res.status(400).json({ error: "Email already exists" });
   }
+  // Audit append: never log password / passwordHash / reset_token —
+  // recordAudit does not receive them, but we list the safe fields
+  // explicitly for clarity.
+  await recordAudit(req, {
+    action: "user.created",
+    entityType: "user",
+    entityId: created.id,
+    payload: {
+      userEmail: created.email,
+      role: created.role,
+      storeType: created.storeType || null,
+      storeId: created.storeId || null,
+      approved: !!created.approved,
+    },
+  });
   return res.json(sanitizeUser(created));
 });
 
@@ -643,6 +658,37 @@ app.put("/api/users/:id", ensureAuth, async (req, res) => {
   if (updates.password) patch.password = bcrypt.hashSync(updates.password, 10);
 
   const updated = await usersQueries.update(id, patch);
+  if (updated) {
+    // Field-level diff using the patch keys we actually set — never
+    // touches password / reset_token.
+    const fields = Object.keys(patch).map((camel) => {
+      const map = {
+        email: "email",
+        role: "role",
+        storeType: "store_type",
+        storeId: "store_id",
+        ownerEmail: "owner_email",
+        rootOwnerEmail: "root_owner_email",
+        approved: "approved",
+        status: "status",
+        name: "name",
+        phone: "phone",
+        address: "address",
+      };
+      return map[camel] || camel;
+    });
+    await recordAudit(req, {
+      action: "user.updated",
+      entityType: "user",
+      entityId: updated.id,
+      payload: {
+        targetEmail: updated.email,
+        before: pick(targetUser, fields),
+        after: pick(updated, fields),
+        fields,
+      },
+    });
+  }
   return res.json(sanitizeUser(updated));
 });
 
@@ -660,6 +706,12 @@ app.delete("/api/users/:id", ensureAuth, async (req, res) => {
   }
 
   await usersQueries.deleteById(id);
+  await recordAudit(req, {
+    action: "user.deleted",
+    entityType: "user",
+    entityId: id,
+    payload: { targetEmail: targetUser.email, role: targetUser.role },
+  });
   return res.json({ ok: true });
 });
 
@@ -774,6 +826,17 @@ app.post("/api/store-settings", ensureAuth, async (req, res) => {
     storeType,
     storeId,
     payload,
+  });
+  // Audit append: settings writes can materially change billing/UI
+  // behaviour, so record them with the keys that were touched.
+  const changedKeys = Object.keys(payload || {}).filter(
+    (k) => !k.startsWith("store-settings:")
+  );
+  await recordAudit(req, {
+    action: "store_settings.updated",
+    entityType: "store_settings",
+    entityId: scopeKey,
+    payload: { scopeKey, scopeType, changedKeys },
   });
   res.json(saved ?? {});
 });
@@ -1500,6 +1563,26 @@ app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
         scope: eventScope,
       })
     );
+    // Audit only the status transition path — generic field edits are
+    // not admin-grade and would bloat the log. The frontend sends
+    // `status: "cleared" | "cancelled" | "paid" | "pending"` for
+    // Clear/Cancel buttons.
+    if (
+      req.body &&
+      Object.prototype.hasOwnProperty.call(req.body, "status") &&
+      req.body.status !== existing.status
+    ) {
+      await recordAudit(req, {
+        action: "invoice.status_changed",
+        entityType: "invoice",
+        entityId: updated.invoiceNo || String(updated.id),
+        payload: {
+          invoiceNo: updated.invoiceNo || null,
+          from: existing.status || null,
+          to: updated.status || null,
+        },
+      });
+    }
   }
   return res.json(updated);
 });
@@ -1624,6 +1707,19 @@ app.post("/api/invoices", ensureAuth, async (req, res) => {
         scope: effectiveScope,
       })
     );
+    await recordAudit(req, {
+      action: "invoice.created",
+      entityType: "invoice",
+      entityId: saved.invoiceNo || (saved.id != null ? String(saved.id) : null),
+      payload: {
+        invoiceNo: saved.invoiceNo || null,
+        total: saved.total ?? null,
+        grandTotal: saved.grandTotal ?? saved.total ?? null,
+        customerName: saved.customerName || saved.customer_name || null,
+        itemCount: Array.isArray(saved.items) ? saved.items.length : 0,
+        storeType: effectiveScope.storeType,
+      },
+    });
     return res.status(201).json(saved);
   } catch (err) {
     const status = err.status || 500;
@@ -1905,6 +2001,26 @@ app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
         scope: effectiveScope,
       })
     );
+    // Audit append for the retail checkout path. Mirrors the POST
+    // /api/invoices audit but uses the checkout result shape (the
+    // .invoice sub-tree is the persisted row).
+    const persistedInvoice = result?.invoice || result;
+    if (persistedInvoice) {
+      await recordAudit(req, {
+        action: "invoice.created",
+        entityType: "invoice",
+        entityId: persistedInvoice.invoiceNo || (persistedInvoice.id != null ? String(persistedInvoice.id) : null),
+        payload: {
+          invoiceNo: persistedInvoice.invoiceNo || null,
+          total: persistedInvoice.total ?? null,
+          grandTotal: persistedInvoice.grandTotal ?? persistedInvoice.total ?? null,
+          customerName: persistedInvoice.customerName || persistedInvoice.customer_name || null,
+          itemCount: Array.isArray(persistedInvoice.items) ? persistedInvoice.items.length : 0,
+          source: "checkout",
+          storeType: effectiveScope.storeType,
+        },
+      });
+    }
     // After the decrement, peek at each line item and emit a stock event
     // for any product that just crossed (or sits at/below) its low_stock
     // threshold. One event per affected product so the client's toast
@@ -2436,31 +2552,301 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
   res.send(csv);
 });
 
-// Audit log — append-only event stream.
-// Read-only via HTTP. Non-SUPER_OWNER roles are scoped to their own
-// user_id (matches the docstring on auditLogService: the log is
-// per-user, not per-store). SUPER_OWNER can pass userId explicitly to
-// view other users' logs.
+// === Generic audit append helpers =========================================
+//
+// These constants + helpers power the catch-all /api/:resource audit
+// hooks. The set is intentionally small: only resources with
+// admin-grade audit semantics. Hotel sub-resources and notifications
+// are omitted because they don't drive compliance workflows today.
+
+const AUDITED_GENERIC_RESOURCES = new Set([
+  "services",
+  "customers",
+  "orders",
+  "products",
+  "expenses",
+  "customer-credits",
+]);
+
+// Resource → audit-log entity_type. Kept singular because the audit
+// row already carries a singular noun (the existing
+// service.rate_changed hook uses "service", customer uses "customer").
+const SINGULAR = {
+  services: "service",
+  customers: "customer",
+  orders: "order",
+  products: "product",
+  expenses: "expense",
+  "customer-credits": "customer_credit",
+};
+
+// Used by the generic PUT branch to skip the shallow-diff audit when
+// the resource has its own richer hook (services.rate_changed) so we
+// don't double-log the same change.
+const AUDITED_SERVICE_HAS_RICH_HOOK = true;
+
+// pick: shallow subset of an object. Used to keep audit payload size
+// bounded and to avoid writing password fields etc. that callers
+// shouldn't expose to the audit trail even when the row has them.
+const pick = (obj, keys) => {
+  if (!obj || typeof obj !== "object") return {};
+  const out = {};
+  for (const k of keys) {
+    if (obj[k] !== undefined) out[k] = obj[k];
+  }
+  return out;
+};
+
+// diffKeys: returns the union of keys whose values differ between
+// `before` and `after`. Used by the generic update audit to enumerate
+// `fields`. Skips internal columns (_user_email, _store_type, etc.) so
+// the diff is business-meaningful, not just a shape echo.
+const SKIP_DIFF_KEYS = new Set([
+  "id",
+  "created_at",
+  "updated_at",
+  "_store_type",
+  "_store_id",
+  "_user_email",
+  "password",
+  "passwordHash",
+  "password_hash",
+  "reset_token",
+]);
+const diffKeys = (before, after) => {
+  if (!before || !after) return [];
+  const keys = new Set();
+  for (const k of Object.keys(after)) {
+    if (SKIP_DIFF_KEYS.has(k)) continue;
+    if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) keys.add(k);
+  }
+  return Array.from(keys);
+};
+
+// summarizeResource: pick a small human-readable summary per resource.
+// Mirrors what the existing RecentActivity frontend summarizeRow() does
+// server-side so a future row can render correctly without re-fetching
+// the underlying record.
+const summarizeResource = (resource, row) => {
+  if (!row || typeof row !== "object") return {};
+  if (resource === "services") {
+    return {
+      serviceName: row.name || null,
+      rate: row.rate != null ? row.rate : null,
+    };
+  }
+  if (resource === "customers") {
+    return {
+      customerName: row.name || null,
+      approvalStatus: row.approvalStatus || row.status || null,
+    };
+  }
+  if (resource === "orders") {
+    return {
+      orderNo: row.orderNo || row.invoiceNo || (row.id != null ? String(row.id) : null),
+      customerName: row.customerName || null,
+    };
+  }
+  if (resource === "products") {
+    return {
+      productName: row.name || row.productName || null,
+    };
+  }
+  if (resource === "expenses") {
+    return {
+      description: row.description || row.category || null,
+    };
+  }
+  if (resource === "customer-credits") {
+    return {
+      customerName: row.customerName || row.customerEmail || null,
+      amount: row.amount != null ? row.amount : null,
+    };
+  }
+  return {};
+};
+
+// === Audit log — append-only event stream.
+//
+// Read-only via HTTP. Mutations are 405'd below so no ordinary API path
+// can edit or delete an audit row. Scoping:
+//   - Non-SUPER_OWNER roles are bound to their own user_id AND their
+//     authorized (storeType, storeId). Any userId/storeType/storeId
+//     query params they pass are ignored — the route layer substitutes
+//     req.user.id and the caller's scope, so a tampered request can
+//     never widen the result.
+//   - SUPER_OWNER may pass userId/storeType/storeId explicitly to
+//     narrow; without a storeType hint the platform-wide view is
+//     returned (matches getRequestScope semantics).
+//
+// New filters (added for the Recent Activity upgrade):
+//   - storeType / storeId: scope-narrow
+//   - outcome: "success" | "failed"  (uses payload.ok)
+//   - order:   "asc" | "desc"        (created_at, default desc)
+//   - q:       free-text (currently handled in-memory by the existing
+//              frontend summary; the server still accepts it for
+//              forwards-compat with the upcoming server-side search)
+
+const resolveAuditLogScope = (req) => {
+  const isSuperOwner = String(req.user?.role || "").toUpperCase() === "SUPER_OWNER";
+  const requestScope = getRequestScope(req);
+  if (isSuperOwner) {
+    return {
+      userId: req.query.userId ? Number(req.query.userId) : null,
+      storeType: requestScope.storeType || (req.query.storeType ? String(req.query.storeType) : null),
+      storeId: requestScope.storeId || (req.query.storeId ? String(req.query.storeId) : null),
+    };
+  }
+  // Non-super-owner: hard-bound to their own user + scope. Any query
+  // params attempting to widen are silently dropped.
+  return {
+    userId: req.user.id,
+    storeType: requestScope.storeType || null,
+    storeId: requestScope.storeId || null,
+  };
+};
 
 app.get("/api/audit-log", ensureAuth, async (req, res) => {
-  const isSuperOwner = req.user?.role === "SUPER_OWNER";
-  // Non-super-owners can only see their own entries; ignore any userId
-  // they pass to avoid leaking other users' logs.
-  const userId = isSuperOwner && req.query.userId
-    ? Number(req.query.userId)
-    : (isSuperOwner ? null : req.user.id);
+  const { userId, storeType, storeId } = resolveAuditLogScope(req);
   const result = await auditLogQueries.list({
     userId,
     action: req.query.action,
     entityType: req.query.entityType,
     entityId: req.query.entityId,
+    storeType,
+    storeId,
+    outcome: req.query.outcome,
     since: req.query.since,
     until: req.query.until,
+    order: req.query.order,
     limit: req.query.limit,
     offset: req.query.offset,
   });
   res.json(result);
 });
+
+// Block any non-GET on /api/audit-log so a stray POST/PUT/DELETE never
+// mutates the append-only stream. The wildcard 404 below catches
+// /api/audit-log/<anything> so sub-paths fail closed too.
+const auditLogGuard = (req, res) => {
+  res.set("Allow", "GET");
+  res.status(405).json({ error: "Audit log is read-only" });
+};
+app.post("/api/audit-log", ensureAuth, auditLogGuard);
+app.put("/api/audit-log", ensureAuth, auditLogGuard);
+app.delete("/api/audit-log", ensureAuth, auditLogGuard);
+app.patch("/api/audit-log", ensureAuth, auditLogGuard);
+
+// CSV export. Same auth + role gate as the JSON view, same store-scope
+// enforcement. We deliberately omit the request `body` (potential PII),
+// IP, and user-agent from the export columns; an admin running a
+// compliance export doesn't need them and including them would risk
+// leaking customer names or PII from request payloads.
+app.get("/api/audit-log/export", ensureAuth, async (req, res) => {
+  if (!requireReportAccess(req, res)) return;
+  const { userId, storeType, storeId } = resolveAuditLogScope(req);
+  const result = await auditLogQueries.list({
+    userId,
+    action: req.query.action,
+    entityType: req.query.entityType,
+    entityId: req.query.entityId,
+    storeType,
+    storeId,
+    outcome: req.query.outcome,
+    since: req.query.since,
+    until: req.query.until,
+    order: req.query.order || "desc",
+    limit: 5000,
+    offset: 0,
+  });
+  const rows = (result.rows || []).map((r) => ({
+    at: r.at || "",
+    action: r.action || "",
+    resource: r.resource || "",
+    resourceId: r.resourceId || "",
+    userEmail: r.userEmail || "",
+    userRole: r.userRole || "",
+    storeType: r.storeType || "",
+    storeId: r.storeId || "",
+    statusCode: r.statusCode != null ? r.statusCode : "",
+    ok: r.ok == null ? "" : r.ok ? "true" : "false",
+    errorMessage: r.errorMessage || "",
+  }));
+  const csv = toCsv(rows);
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="audit-log-${stamp}.csv"`
+  );
+  res.send(csv);
+});
+
+// === Audit append helper =================================================
+//
+// Append-only event recorder used by the create / update / delete handlers
+// below. The append is best-effort: a transient failure logs a warning
+// but does NOT roll back the underlying business write. The same
+// best-effort pattern is used by the existing customer approval +
+// service rate-change hooks — this helper centralises it so the rest of
+// the codebase stays terse.
+//
+// All audit emissions also publish an SSE `audit` event so RecentActivity
+// subscribers see the row without polling. We deliberately do NOT include
+// the raw request body (potential PII) in the SSE payload.
+//
+// Shape of the `payload` argument is forwarded to audit_log.payload JSON.
+// Callers should put any safe metadata (service name, before/after diff,
+// changed field names, etc.) directly in there — RecentActivity's
+// drawer renders those.
+const recordAudit = async (req, { action, entityType = null, entityId = null, payload = null, ok = null }) => {
+  if (!action) return null;
+  const scope = getRequestScope(req);
+  const user = req.user || {};
+  const enrichedPayload = {
+    ...(payload || {}),
+    userEmail: user.email || null,
+    userRole: user.role || null,
+    storeType: scope.storeType || null,
+    storeId: scope.storeId || null,
+  };
+  if (ok != null) enrichedPayload.ok = ok;
+  let auditId = null;
+  try {
+    auditId = await auditLogQueries.append({
+      userId: user.id || null,
+      action,
+      entityType,
+      entityId: entityId != null ? String(entityId) : null,
+      payload: enrichedPayload,
+      ip: req.ip || null,
+    });
+  } catch (e) {
+    console.warn(`[audit-log] ${action} append failed:`, e.message);
+  }
+  try {
+    realtimeHub.publish(
+      realtimeHub.buildAuditEvent({
+        action,
+        scope,
+        entry: {
+          id: auditId != null ? String(auditId) : null,
+          resource: entityType,
+          resourceId: entityId != null ? String(entityId) : null,
+          userEmail: enrichedPayload.userEmail,
+          userRole: enrichedPayload.userRole,
+          storeType: enrichedPayload.storeType,
+          storeId: enrichedPayload.storeId,
+          ok: typeof enrichedPayload.ok === "boolean" ? enrichedPayload.ok : null,
+          at: new Date().toISOString(),
+        },
+      })
+    );
+  } catch (e) {
+    console.warn(`[sse] audit publish failed:`, e.message);
+  }
+  return auditId;
+};
 
 // Laundry — token counter + ledger.
 // Counter is per (day, storeType, storeId); idempotent on writes that
@@ -3139,27 +3525,18 @@ app.post("/api/customers/:id/approve", ensureAuth, async (req, res) => {
 
   // Audit trail: append-only recent-activity entry so the admin decision
   // shows up in the existing RecentActivity.jsx feed without any frontend
-  // wiring change.
-  try {
-    await auditLogQueries.append({
-      userId: req.user?.id || null,
-      action: status === "approved" ? "customer.approved" : "customer.rejected",
-      entityType: "customer",
-      entityId: String(updated.id),
-      payload: {
-        userEmail: req.user?.email || null,
-        userRole: role,
-        storeType: scope.storeType || null,
-        storeId: scope.storeId || null,
-        from: "pending",
-        to: updated.approvalStatus,
-        ...(updated.rejectionReason ? { reason: updated.rejectionReason } : {}),
-      },
-      ip: req.ip || null,
-    });
-  } catch (e) {
-    console.warn("[audit-log] customer approval append failed:", e.message);
-  }
+  // wiring change. recordAudit also publishes an SSE `audit` event.
+  await recordAudit(req, {
+    action: status === "approved" ? "customer.approved" : "customer.rejected",
+    entityType: "customer",
+    entityId: updated.id,
+    payload: {
+      customerName: updated.name || null,
+      from: "pending",
+      to: updated.approvalStatus,
+      ...(updated.rejectionReason ? { reason: updated.rejectionReason } : {}),
+    },
+  });
 
   // Publish the SSE customer event so other tabs in the same store refresh
   // their list. The action is just an invalidation — the API is
@@ -3220,6 +3597,21 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
       console.warn(`[sse] ${resource} create publish failed:`, e.message);
     }
   }
+  // Best-effort audit append for the resources that materially change
+  // business state. We deliberately omit hotel sub-resources and
+  // notifications — those don't have admin-grade audit semantics in
+  // the current codebase and would just bloat the log. recordAudit is
+  // fire-and-forget; a transient failure is logged but doesn't roll
+  // back the create.
+  if (created && AUDITED_GENERIC_RESOURCES.has(resource)) {
+    const summary = summarizeResource(resource, created);
+    await recordAudit(req, {
+      action: `${SINGULAR[resource]}.created`,
+      entityType: SINGULAR[resource],
+      entityId: created.id,
+      payload: summary,
+    });
+  }
   return res.json(created);
 });
 
@@ -3253,6 +3645,32 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const updated = await mysqlQueries.update(id, req.body || {});
+
+  // Generic audit append for create/update/delete surfaces. Carries a
+  // shallow before/after diff for the audited resources so the drawer
+  // can render a comparison. The dedicated customer-approval +
+  // service-rate-change hooks below also fire (they own the
+  // business-specific payload shape), so we skip the generic append
+  // for those two cases to avoid duplicate rows.
+  if (
+    updated &&
+    AUDITED_GENERIC_RESOURCES.has(resource) &&
+    !(resource === "services" && AUDITED_SERVICE_HAS_RICH_HOOK)
+  ) {
+    const fields = diffKeys(existing, updated);
+    const summary = summarizeResource(resource, updated);
+    await recordAudit(req, {
+      action: `${SINGULAR[resource]}.updated`,
+      entityType: SINGULAR[resource],
+      entityId: updated.id,
+      payload: {
+        ...summary,
+        before: pick(existing, fields),
+        after: pick(updated, fields),
+        fields,
+      },
+    });
+  }
 
   // F6: rate-history capture for service catalog edits. We only append
   // when at least one of {rate, hours, gst} actually changed — pure
@@ -3292,39 +3710,31 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
       // Mirror the change into the generic audit_log so the existing
       // RecentActivity UI (admin-only) surfaces it. RecentActivity
       // already maps entity_type='services' to "Service" so no frontend
-      // work is required for this hook to take effect.
-      try {
-        await auditLogQueries.append({
-          userId: req.user?.id || null,
-          action: "service.rate_changed",
-          entityType: "service",
-          entityId: String(updated.id),
-          payload: {
-            userEmail: req.user?.email || null,
-            userRole: req.user?.role || null,
-            storeType: scope.storeType || null,
-            storeId: scope.storeId || null,
-            before: {
-              rate: existing.rate,
-              gst: existing.gst,
-              hours: existing.hours,
-            },
-            after: {
-              rate: updated.rate,
-              gst: updated.gst,
-              hours: updated.hours,
-            },
-            fields: [
-              rateChanged ? "rate" : null,
-              gstChanged ? "gst" : null,
-              hoursChanged ? "hours" : null,
-            ].filter(Boolean),
+      // work is required for this hook to take effect. recordAudit also
+      // publishes an SSE `audit` event so other tabs see the change live.
+      await recordAudit(req, {
+        action: "service.rate_changed",
+        entityType: "service",
+        entityId: updated.id,
+        payload: {
+          serviceName: updated.name || existing.name || null,
+          before: {
+            rate: existing.rate,
+            gst: existing.gst,
+            hours: existing.hours,
           },
-          ip: req.ip || null,
-        });
-      } catch (e) {
-        console.warn("[audit-log] service.rate_changed append failed:", e.message);
-      }
+          after: {
+            rate: updated.rate,
+            gst: updated.gst,
+            hours: updated.hours,
+          },
+          fields: [
+            rateChanged ? "rate" : null,
+            gstChanged ? "gst" : null,
+            hoursChanged ? "hours" : null,
+          ].filter(Boolean),
+        },
+      });
     }
   }
 
@@ -3365,6 +3775,18 @@ app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: "Not found" });
   }
   const deleted = await mysqlQueries.deleteById(id);
+  // Best-effort audit append for deletes. The summary carries enough
+  // context (name/email/invoiceNo/productName) for the RecentActivity
+  // row to be readable without a JOIN.
+  if (deleted && AUDITED_GENERIC_RESOURCES.has(resource)) {
+    const summary = summarizeResource(resource, existing);
+    await recordAudit(req, {
+      action: `${SINGULAR[resource]}.deleted`,
+      entityType: SINGULAR[resource],
+      entityId: existing.id,
+      payload: { ...summary, before: pick(existing, ["name", "email", "invoiceNo", "productName", "description"]) },
+    });
+  }
   if (deleted && REALTIME_RESOURCE_KINDS[resource]) {
     try {
       const reference = {

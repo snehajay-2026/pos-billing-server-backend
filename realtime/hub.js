@@ -32,6 +32,11 @@ const CHANNELS = {
   SERVICE: (storeType, storeId) => `services:${storeType || ""}:${storeId || ""}`,
   CUSTOMER: (storeType, storeId) => `customers:${storeType || ""}:${storeId || ""}`,
   CUSTOMER_CREDIT: (storeType, storeId) => `customer-credits:${storeType || ""}:${storeId || ""}`,
+  // Audit log channel — RecentActivity subscribes here so an admin in
+  // tab A sees a new audit entry from tab B in real time without
+  // polling. The channel is per-(storeType, storeId); a SUPER_OWNER
+  // listening on the global channel will receive all entries.
+  AUDIT: (storeType, storeId) => `audit:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -191,6 +196,26 @@ const buildCustomerCreditEvent = ({ action, credit, scope }) => ({
   credit: credit ? { id: credit.id } : null,
 });
 
+// Audit-log SSE event. The `entry` is the AuditEntry object returned by
+// auditLogQueries.list() / rowToEntry() — only safe fields are forwarded
+// (no request body, no IP/user-agent) so the bus doesn't leak PII. The
+// `auditId` lets the client dedupe when the same entry also arrives via
+// the eventual /api/audit-log poll.
+const buildAuditEvent = ({ action, entry, scope }) => ({
+  kind: "audit",
+  action, // e.g. "service.created", "customer.approved"
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.AUDIT(scope?.storeType, scope?.storeId),
+  auditId: entry?.id ? String(entry.id) : null,
+  resource: entry?.resource || null,
+  resourceId: entry?.resourceId || null,
+  userEmail: entry?.userEmail || null,
+  userRole: entry?.userRole || null,
+  at: entry?.at || null,
+  ok: typeof entry?.ok === "boolean" ? entry.ok : null,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
@@ -204,5 +229,6 @@ module.exports = {
   buildServiceEvent,
   buildCustomerEvent,
   buildCustomerCreditEvent,
+  buildAuditEvent,
   recentEvents,
 };
