@@ -2,17 +2,17 @@
 //
 // Same shape as products.js but for the `services` table. Columns per
 // schema.sql: id, name, description, rate, hours, gst, category, industry,
-// default_template_id, hsn_sac, _store_type, _store_id, _user_email,
-// created_at, updated_at.
+// default_template_id, hsn_sac, field_values, _store_type, _store_id,
+// _user_email, created_at, updated_at.
 //
 // The `industry` / `default_template_id` / `hsn_sac` columns were added
 // in migration F9 in db/runtime-migrations.js so a service row in the
 // Service Catalog can carry the per-product invoice-template mapping that
-// the Service Billing screen auto-applies at bill time. They're nullable,
-// so legacy rows keep working. The query layer always SELECTs them (the
-// column probe at boot — same pattern as `invoices.shift_id` — isn't
-// worth the complexity here because columns this short aren't called on a
-// hot loop and the runtime migration is idempotent).
+// the Service Billing screen auto-applies at bill time. The `field_values`
+// column was added in F10 (same migration file) so the cashier's typed
+// per-industry defaults (PO number, distributor code, etc.) persist on
+// the row and pre-fill the next bill's industry-fields drawer. All four
+// columns are nullable; legacy rows keep working.
 //
 // Conventions (matching db/queries/products.js):
 //   - Returns plain JS objects, id cast to Number (Date.now() shape).
@@ -21,17 +21,132 @@
 //     preserved for the frontend.
 //   - DECIMAL columns come back as strings under decimalNumbers:false —
 //     we parse to Number for rate/hours/gst.
+//   - JSON columns (`field_values`) come back as strings; rowToService
+//     parses them with a safe-fallback to {} so the frontend never has
+//     to null-check.
 //
 // Bug fix (mirrors products.js Bug #3): the previous buildWhere appended
 // `_user_email = ?` unconditionally. That made a cashier's GET /api/services
 // return [] whenever the catalog had been seeded by an admin in the same
 // store. Reads now ignore email via includeEmail:false; ownership of writes
 // is still gated on email through findByIdScoped (includeEmail:true).
+//
+// F10 backend validation: required-field gating. When a create/update
+// submits an `industry` together with `fieldValues`, the same keys that
+// the frontend form marked with a red `*` (via `requiredFieldsFor` on
+// the registry) must be non-empty in the submitted object. This is the
+// brief's "Validate submitted industry and field data on the backend
+// wherever appropriate" requirement — a curl-spoofed POST that bypasses
+// the form still can't land a half-filled Manufacturing row.
 
 const { query } = require("../pool");
 
 const COLUMNS =
-  "id, name, description, rate, hours, gst, category, industry, default_template_id, hsn_sac, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, name, description, rate, hours, gst, category, industry, default_template_id, hsn_sac, field_values, _store_type, _store_id, _user_email, created_at, updated_at";
+
+// Safe JSON parser used by rowToService and the create/update paths.
+// Tolerant of:
+//   - null / undefined → {}
+//   - empty string    → {}
+//   - non-JSON strings → {} (logged once so a stale shape on disk
+//     surfaces in monitoring without breaking the read path)
+const safeParseJson = (raw, { fallback = {}, logLabel = "json" } = {}) => {
+  if (raw == null) return fallback;
+  if (typeof raw === "object") return raw;
+  if (typeof raw !== "string") return fallback;
+  const text = raw.trim();
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : fallback;
+  } catch (err) {
+    console.warn(`[services] could not parse ${logLabel}: ${err.message}`);
+    return fallback;
+  }
+};
+
+// Normalize the submitted fieldValues payload to a plain object of
+// { [key]: string }. Strips arrays / nested objects / nulls so the JSON
+// column stays predictable and the validator can simply Object.keys().
+const normalizeFieldValues = (input) => {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (v == null) continue;
+    if (typeof v === "string") {
+      const trimmed = v.trim();
+      if (trimmed) out[k] = trimmed;
+    } else if (typeof v === "number" || typeof v === "boolean") {
+      out[k] = String(v);
+    }
+    // Arrays / objects on the way in are silently dropped — the registry
+    // only ever emits string-valued fields.
+  }
+  return out;
+};
+
+// Mirror of the frontend helper at
+// src/components/service/templates/index.js. Returns the list of field
+// keys that the registry marks as `required: true` for a given industry.
+// Lives here so a curl-spoofed create/update can't bypass the form's
+// `*` markers — the brief's section 10 requires backend validation.
+//
+// Today the supported industries and their required keys are:
+//   consulting    → engagementRef
+//   manufacturing → poNumber
+//   wholesale     → poNumber
+//   hardware      → poNumber
+//   trading       → poNumber
+//   healthcare    → patientId
+//   logistics     → lrNo
+//   education     → courseName
+//   nonprofit     → donorName
+//
+// Other industries (startup, realestate, distributors, construction,
+// agriculture, foodbeverage, technology) intentionally have no required
+// keys today — the cashier fills what they know and the bill saves with
+// partial fields. Add entries here if a future product owner flags a
+// field as must-have.
+const REQUIRED_FIELDS_BY_INDUSTRY = {
+  consulting: ["engagementRef"],
+  manufacturing: ["poNumber"],
+  wholesale: ["poNumber"],
+  hardware: ["poNumber"],
+  trading: ["poNumber"],
+  healthcare: ["patientId"],
+  logistics: ["lrNo"],
+  education: ["courseName"],
+  nonprofit: ["donorName"],
+};
+
+const requiredFieldsFor = (industryId) =>
+  industryId && REQUIRED_FIELDS_BY_INDUSTRY[industryId]
+    ? REQUIRED_FIELDS_BY_INDUSTRY[industryId]
+    : [];
+
+// Validate the (industry, fieldValues) pair against the registry's
+// required-field markers. Throws an Error with .status = 400 and a
+// human-readable message listing each missing key. Empty / missing
+// industry means no validation runs (legacy callers that don't set
+// industry at all are unaffected).
+const validateFieldValues = (industry, fieldValues) => {
+  if (!industry) return;
+  const required = requiredFieldsFor(industry);
+  if (!required.length) return;
+  const values = fieldValues || {};
+  const missing = required.filter(
+    (k) => values[k] == null || String(values[k]).trim() === ""
+  );
+  if (missing.length) {
+    const err = new Error(
+      `Missing required field(s) for ${industry}: ${missing.join(", ")}`
+    );
+    err.status = 400;
+    err.code = "MISSING_REQUIRED_FIELDS";
+    err.missing = missing;
+    throw err;
+  }
+};
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -57,6 +172,14 @@ const rowToService = (row) => {
     industry: row.industry || null,
     defaultTemplateId: row.default_template_id || null,
     hsnSac: row.hsn_sac || null,
+    // F10: per-service dynamic field values. The column is LONGTEXT
+    // holding a JSON-encoded { [fieldKey]: string } object. Parsing is
+    // tolerant — null / empty / bad JSON all surface as {} so the
+    // frontend never has to defend against undefined.
+    fieldValues: safeParseJson(row.field_values, {
+      fallback: {},
+      logLabel: "field_values",
+    }),
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
@@ -137,13 +260,18 @@ const findByName = async (name, scope) => {
 };
 
 const create = async (item, scope) => {
+  // F10: validate the (industry, fieldValues) pair before we touch the
+  // DB. The required-field markers live on the same registry the
+  // frontend reads so the * on the form matches the backend gate.
+  const normalizedFields = normalizeFieldValues(item.fieldValues);
+  validateFieldValues(item.industry, normalizedFields);
   const id = Date.now();
   await query(
     `INSERT INTO services
        (id, name, description, rate, hours, gst, category,
-        industry, default_template_id, hsn_sac,
+        industry, default_template_id, hsn_sac, field_values,
         _store_type, _store_id, _user_email, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
     [
       id,
       item.name || "",
@@ -158,6 +286,13 @@ const create = async (item, scope) => {
       item.industry || null,
       item.defaultTemplateId || null,
       item.hsnSac || null,
+      // F10: serialize the normalized field map. We persist NULL when
+      // the cashier saved with no industry / no values so the column
+      // doesn't carry a stray "{}" that would show up as truthy on a
+      // future boolean check.
+      Object.keys(normalizedFields).length
+        ? JSON.stringify(normalizedFields)
+        : null,
       scope.storeType || null,
       scope.storeId || null,
       scope.email || null,
@@ -171,6 +306,11 @@ const update = async (id, patch) => {
   // allow-list pattern so a stray field on the request body never
   // touches the row. Empty strings normalize to NULL on the way in
   // so a cleared dropdown doesn't leave a stray "" in the catalog.
+  // F10: fieldValues joins the allow-list with a JSON-encoded payload
+  // (or NULL when cleared). When fieldValues is present we also need
+  // industry on the same patch to validate the required keys — if the
+  // cashier is changing industry alone without rewriting fields, we
+  // fall back to the existing row's industry for the validation check.
   const allowed = [
     "name",
     "description",
@@ -181,7 +321,37 @@ const update = async (id, patch) => {
     "industry",
     "defaultTemplateId",
     "hsnSac",
+    "fieldValues",
   ];
+
+  // Run validation up front so we don't half-write a row. Read the
+  // existing row first to know its current industry (the patch may not
+  // include one).
+  let existingIndustry = null;
+  let existingFields = {};
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "fieldValues") ||
+    Object.prototype.hasOwnProperty.call(patch, "industry")
+  ) {
+    const existing = await findById(id);
+    if (existing) {
+      existingIndustry = existing.industry || null;
+      existingFields = existing.fieldValues || {};
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch, "fieldValues")) {
+    const normalized = normalizeFieldValues(patch.fieldValues);
+    const effectiveIndustry =
+      patch.industry !== undefined ? patch.industry || null : existingIndustry;
+    validateFieldValues(effectiveIndustry, normalized);
+  } else if (Object.prototype.hasOwnProperty.call(patch, "industry")) {
+    // Industry change without an explicit fieldValues: validate the
+    // existing field map against the new industry's required keys so
+    // a switch from Manufacturing to Healthcare can't strand a row
+    // with empty patientId when healthcare is now mandatory.
+    validateFieldValues(patch.industry || null, existingFields);
+  }
+
   const sets = [];
   const params = [];
   for (const k of allowed) {
@@ -196,6 +366,12 @@ const update = async (id, patch) => {
       (v === "" || v === undefined)
     ) {
       v = null;
+    }
+    // F10: serialize the normalized field map; an empty object
+    // collapses to NULL so the column stays tight.
+    if (k === "fieldValues") {
+      const normalized = normalizeFieldValues(v);
+      v = Object.keys(normalized).length ? JSON.stringify(normalized) : null;
     }
     sets.push(`\`${k}\` = ?`);
     params.push(v);

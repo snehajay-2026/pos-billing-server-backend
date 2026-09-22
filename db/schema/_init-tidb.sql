@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS `services` (
   `industry` VARCHAR(64) NULL,
   `default_template_id` VARCHAR(64) NULL,
   `hsn_sac` VARCHAR(16) NULL,
+  -- F10: per-service dynamic field values. JSON-encoded object whose
+  -- keys are field keys from fieldConfigFor(industry). See migration
+  -- 016_services_field_values.sql for the parallel DBA-executed path
+  -- on existing DBs, and db/runtime-migrations.js for the
+  -- auto-applied path.
+  `field_values` LONGTEXT NULL,
   `_store_type` VARCHAR(64) NULL,
   `_store_id` VARCHAR(128) NULL,
   `_user_email` VARCHAR(255) NULL,

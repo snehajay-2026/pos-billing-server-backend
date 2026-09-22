@@ -219,6 +219,31 @@ const MIGRATIONS = [
     column: "hsn_sac",
     ddl: "ALTER TABLE `services` ADD COLUMN `hsn_sac` VARCHAR(16) NULL AFTER `default_template_id`",
   },
+  // F10: per-service dynamic field values keyed off the industry
+  // template registry. The Service Catalog form (ServiceManagementPage.jsx)
+  // grows industry-specific inputs (PO number, distributor code, etc.) as
+  // soon as the cashier picks an industry, and persists whatever they
+  // type here so the next bill can pre-fill the same fields via
+  // ServiceBilling.jsx's toggleItem auto-seed.
+  //
+  // Shape: a JSON-encoded object whose keys are the field `key`s from
+  // `fieldConfigFor(industry)` and whose values are free-text strings.
+  // Only the keys belonging to the service's saved industry are
+  // persisted; switching industries on the row drops stale keys so the
+  // JSON stays tight. Legacy services (no field_values column) keep
+  // working — the column is nullable with no default.
+  //
+  // Why LONGTEXT and not native JSON: this codebase already standardizes
+  // on LONGTEXT for free-form JSON columns (invoices.items,
+  // invoices.discount, invoices.discount_breakdown). Following the
+  // convention keeps the migration uniform and avoids the TiDB-vs-MySQL
+  // dialect differences on JSON extraction paths.
+  {
+    name: "services.field_values",
+    table: "services",
+    column: "field_values",
+    ddl: "ALTER TABLE `services` ADD COLUMN `field_values` LONGTEXT NULL AFTER `hsn_sac`",
+  },
 ];
 
 const isDenied = (err) => {
