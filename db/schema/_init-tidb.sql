@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS `services` (
   `hours` DECIMAL(8, 2) NULL,
   `gst` DECIMAL(5, 2) NOT NULL DEFAULT 0,
   `category` VARCHAR(128) NULL,
+  -- F9: industry / default_template_id / hsn_sac live here for the
+  -- Service Catalog ↔ industry-specific invoice template linkage.
+  -- See migration 015_services_industry_columns.sql for the parallel
+  -- DBA-executed path on existing DBs, and db/runtime-migrations.js
+  -- for the auto-applied path on environments where the app user has
+  -- ALTER rights. All nullable so legacy rows keep working.
+  `industry` VARCHAR(64) NULL,
+  `default_template_id` VARCHAR(64) NULL,
+  `hsn_sac` VARCHAR(16) NULL,
   `_store_type` VARCHAR(64) NULL,
   `_store_id` VARCHAR(128) NULL,
   `_user_email` VARCHAR(255) NULL,
