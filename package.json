@@ -9,7 +9,8 @@
     "test:billable": "node --test billable-customer.authorization.test.js",
     "test:invoice": "node --test invoice.authorization.test.js",
     "test:migrations": "node --test runtime-migrations.critical.test.js",
-    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js"
+    "test:publicInvoice": "node --test lib/publicInvoice.test.js",
+    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
