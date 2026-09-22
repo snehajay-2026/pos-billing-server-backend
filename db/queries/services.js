@@ -1,8 +1,18 @@
 // server/db/queries/services.js
 //
 // Same shape as products.js but for the `services` table. Columns per
-// schema.sql: id, name, description, rate, hours, gst, category,
-// _store_type, _store_id, _user_email, created_at, updated_at.
+// schema.sql: id, name, description, rate, hours, gst, category, industry,
+// default_template_id, hsn_sac, _store_type, _store_id, _user_email,
+// created_at, updated_at.
+//
+// The `industry` / `default_template_id` / `hsn_sac` columns were added
+// in migration F9 in db/runtime-migrations.js so a service row in the
+// Service Catalog can carry the per-product invoice-template mapping that
+// the Service Billing screen auto-applies at bill time. They're nullable,
+// so legacy rows keep working. The query layer always SELECTs them (the
+// column probe at boot — same pattern as `invoices.shift_id` — isn't
+// worth the complexity here because columns this short aren't called on a
+// hot loop and the runtime migration is idempotent).
 //
 // Conventions (matching db/queries/products.js):
 //   - Returns plain JS objects, id cast to Number (Date.now() shape).
@@ -21,7 +31,7 @@
 const { query } = require("../pool");
 
 const COLUMNS =
-  "id, name, description, rate, hours, gst, category, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, name, description, rate, hours, gst, category, industry, default_template_id, hsn_sac, _store_type, _store_id, _user_email, created_at, updated_at";
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -39,6 +49,14 @@ const rowToService = (row) => {
     hours: toNumber(row.hours),
     gst: toNumber(row.gst),
     category: row.category || null,
+    // F9: per-service invoice-template mapping. The Service Billing
+    // screen auto-applies these on a fresh bill; legacy rows keep them
+    // null and the cashier picks manually or falls back to the
+    // store-level default. Surfaced as camelCase to keep the JSON
+    // contract the frontend already consumes.
+    industry: row.industry || null,
+    defaultTemplateId: row.default_template_id || null,
+    hsnSac: row.hsn_sac || null,
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
@@ -123,8 +141,9 @@ const create = async (item, scope) => {
   await query(
     `INSERT INTO services
        (id, name, description, rate, hours, gst, category,
+        industry, default_template_id, hsn_sac,
         _store_type, _store_id, _user_email, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
     [
       id,
       item.name || "",
@@ -133,6 +152,12 @@ const create = async (item, scope) => {
       toNumber(item.hours),
       toNumber(item.gst) ?? 0,
       item.category || null,
+      // F9: optional industry / template / HSN-SAC. NULL when the
+      // cashier left the new fields blank — legacy callers keep
+      // working unchanged.
+      item.industry || null,
+      item.defaultTemplateId || null,
+      item.hsnSac || null,
       scope.storeType || null,
       scope.storeId || null,
       scope.email || null,
@@ -142,13 +167,36 @@ const create = async (item, scope) => {
 };
 
 const update = async (id, patch) => {
-  const allowed = ["name", "description", "rate", "hours", "gst", "category"];
+  // F9: industry + defaultTemplateId + hsnSac ride on the same
+  // allow-list pattern so a stray field on the request body never
+  // touches the row. Empty strings normalize to NULL on the way in
+  // so a cleared dropdown doesn't leave a stray "" in the catalog.
+  const allowed = [
+    "name",
+    "description",
+    "rate",
+    "hours",
+    "gst",
+    "category",
+    "industry",
+    "defaultTemplateId",
+    "hsnSac",
+  ];
   const sets = [];
   const params = [];
   for (const k of allowed) {
     if (!Object.prototype.hasOwnProperty.call(patch, k)) continue;
     let v = patch[k];
     if (["rate", "hours", "gst"].includes(k)) v = toNumber(v);
+    // Treat blank strings as NULL for the optional template-mapping
+    // fields so the cashier can clear a previously-set industry by
+    // re-saving the service with the dropdown on "— none —".
+    if (
+      ["industry", "defaultTemplateId", "hsnSac"].includes(k) &&
+      (v === "" || v === undefined)
+    ) {
+      v = null;
+    }
     sets.push(`\`${k}\` = ?`);
     params.push(v);
   }

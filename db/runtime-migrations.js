@@ -182,6 +182,43 @@ const MIGRATIONS = [
     column: "customer_id",
     ddl: "ALTER TABLE `invoices` ADD COLUMN `customer_id` BIGINT UNSIGNED NULL AFTER `customer_mobile`",
   },
+  // F9: service catalog ↔ industry-specific invoice template linkage.
+  // Adds three nullable columns on the `services` table so a row in the
+  // Service Catalog can carry:
+  //   - industry              — one of the 16 industry ids from the shared
+  //                             template registry (`consulting`,
+  //                             `manufacturing`, …). NULL means "no specific
+  //                             industry / use the store-level default".
+  //   - default_template_id   — picks the per-invoice renderer family +
+  //                             sections at billing time (e.g.
+  //                             `consulting-modern`,
+  //                             `manufacturing-traditional`). Falls back to
+  //                             the system default when NULL.
+  //   - hsn_sac               — HSN (goods) or SAC (services) tax code;
+  //                             optional free-text up to 16 chars. Captured
+  //                             here so the cashier doesn't have to retype
+  //                             it on every bill.
+  // All three columns are nullable so legacy services keep working; the
+  // migration is additive only and the rate-history capture (which diffs
+  // on `rate`/`hours`/`gst`) is untouched.
+  {
+    name: "services.industry",
+    table: "services",
+    column: "industry",
+    ddl: "ALTER TABLE `services` ADD COLUMN `industry` VARCHAR(64) NULL AFTER `category`",
+  },
+  {
+    name: "services.default_template_id",
+    table: "services",
+    column: "default_template_id",
+    ddl: "ALTER TABLE `services` ADD COLUMN `default_template_id` VARCHAR(64) NULL AFTER `industry`",
+  },
+  {
+    name: "services.hsn_sac",
+    table: "services",
+    column: "hsn_sac",
+    ddl: "ALTER TABLE `services` ADD COLUMN `hsn_sac` VARCHAR(16) NULL AFTER `default_template_id`",
+  },
 ];
 
 const isDenied = (err) => {
