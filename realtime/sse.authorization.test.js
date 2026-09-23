@@ -32,6 +32,7 @@ const channelsFor = (storeType, storeId) => [
   hub.CHANNELS.CUSTOMER(storeType, storeId),
   hub.CHANNELS.CUSTOMER_CREDIT(storeType, storeId),
   hub.CHANNELS.AUDIT(storeType, storeId),
+  hub.CHANNELS.RETURN(storeType, storeId),
 ];
 
 test("non-super roles cannot widen SSE scope with store query parameters", () => {

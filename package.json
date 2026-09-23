@@ -8,10 +8,11 @@
     "test:customers": "node --test customers.authorization.test.js",
     "test:billable": "node --test billable-customer.authorization.test.js",
     "test:invoice": "node --test invoice.authorization.test.js",
+    "test:returns": "node --test returns.authorization.test.js",
     "test:migrations": "node --test runtime-migrations.critical.test.js",
     "test:publicInvoice": "node --test lib/publicInvoice.test.js",
     "test:auditLog": "node --test audit-log.authorization.test.js",
-    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js audit-log.authorization.test.js"
+    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js audit-log.authorization.test.js returns.authorization.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

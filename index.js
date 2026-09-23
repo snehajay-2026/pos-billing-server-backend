@@ -31,6 +31,7 @@ const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
 const couponsQueries = require("./db/queries/coupons");
+const returnsQueries = require("./db/queries/returns");
 const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
@@ -3041,6 +3042,213 @@ app.post("/api/stock-movements", ensureAuth, async (req, res) => {
 
 app.get("/api/inventory/low-stock", ensureAuth, async (req, res) => {
   res.json(await inventoryQueries.lowStockAlerts(getInvScope(req)));
+});
+
+// === Retail Returns / Refunds / Exchanges ==================================
+//
+// Scope: RETAIL STORE ONLY. The `requireRetailScope` guard rejects any
+// request whose storeType isn't 'retail', so the route layer can never
+// accept a refund for a Hotel / Laundry / Service invoice. Hotel
+// settlement keeps using /api/hotel/bookings/:id/checkout, kitchen bills
+// keep using /api/hotel/tables/:id/checkout, and laundry keeps the
+// token-counter / delivery flows untouched.
+//
+// Auth: any signed-in role may SUBMIT a return (cashier on the till is
+// the common case). Admin / Super Owner approval gates are out of scope
+// for v1 — the cashier-submits pattern matches the customer approval
+// workflow already in customers.js and keeps the dependency surface
+// minimal.
+
+const requireRetailScope = (req, res) => {
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role === "SUPER_OWNER") return true;
+  const userStoreType = String(req.user?.storeType || "").toLowerCase();
+  if (userStoreType !== "retail") {
+    res.status(403).json({
+      error: "Returns are only available for the Retail store",
+    });
+    return false;
+  }
+  return true;
+};
+
+// GET /api/returns — history of returns for the authorized store.
+// Optional ?invoiceNo= filter for the per-invoice drilldown.
+app.get("/api/returns", ensureAuth, async (req, res) => {
+  if (!requireRetailScope(req, res)) return;
+  const scope = getRequestScope(req);
+  // SUPER_OWNER without a store selection may need to filter; ordinary
+  // users are bound to their session-loaded store, so we ignore their
+  // query-string scope and only respect invoiceNo / type / status.
+  const effectiveScope =
+    String(req.user?.role || "").toUpperCase() === "SUPER_OWNER"
+      ? {
+          storeType: scope.storeType || req.query.storeType || null,
+          storeId: scope.storeId || req.query.storeId || scope.storeType || null,
+        }
+      : {
+          storeType: scope.storeType || req.user?.storeType || null,
+          storeId: scope.storeId || req.user?.storeId || null,
+        };
+  const filters = {};
+  if (req.query.invoiceNo) filters.invoiceNo = String(req.query.invoiceNo);
+  if (req.query.type) filters.type = String(req.query.type);
+  if (req.query.status) filters.status = String(req.query.status);
+  const rows = await returnsQueries.listByScope(effectiveScope, filters);
+  res.json(rows);
+});
+
+// GET /api/returns/:id — full return + items.
+app.get("/api/returns/:id", ensureAuth, async (req, res) => {
+  if (!requireRetailScope(req, res)) return;
+  const scope = getRequestScope(req);
+  const effectiveScope =
+    String(req.user?.role || "").toUpperCase() === "SUPER_OWNER"
+      ? { storeType: null, storeId: null }
+      : {
+          storeType: scope.storeType || req.user?.storeType || null,
+          storeId: scope.storeId || req.user?.storeId || null,
+        };
+  const row = await returnsQueries.findById(req.params.id, effectiveScope);
+  if (!row) return res.status(404).json({ error: "Return not found" });
+  res.json(row);
+});
+
+// POST /api/returns — atomic return/refund/exchange.
+//
+// Body shape:
+//   {
+//     invoiceNo: "SI2026-…",                  // required (except refund)
+//     type: "return" | "refund" | "exchange", // required
+//     scope: "full" | "partial",              // UI hint, server derives too
+//     refundMethod: "cash" | "upi" | "card" | "bank_transfer" | "store_credit" | "exchange",
+//     reason: "free text",
+//     replacementInvoiceNo: "SI2026-…",       // for exchanges
+//     priceDifference: 0,                     // for exchanges (positive = customer pays)
+//     items: [
+//       { productId, qty or qtyKg, condition: "resalable" | "damaged",
+//         unitPrice, lineDiscount, lineGst }
+//     ]
+//   }
+//
+// Side effects (all atomic in a single transaction):
+//   - INSERT invoice_returns + invoice_return_items
+//   - UPDATE products.stock + INSERT stock_movements (resalable=in,
+//     damaged=out)
+//   - INSERT shift_cash_movements when refundMethod='cash' (with
+//     ref_type='return' + ref_id='return-<id>' for idempotency)
+//   - audit log entry (recordAudit)
+//   - SSE: returns channel + stock channel + shift channel
+app.post("/api/returns", ensureAuth, async (req, res) => {
+  if (!requireRetailScope(req, res)) return;
+  const scope = getRequestScope(req);
+  const payload = req.body || {};
+
+  // Resolve the cashier's currently-open shift so the cash-refund path
+  // can append a shift_cash_movements row. Falls back to null when the
+  // cashier has no shift open — non-cash refunds still go through.
+  let activeShift = null;
+  try {
+    activeShift = await shiftsQueries.getActiveForUser(
+      req.user?.id,
+      scope.storeType,
+      scope.storeId
+    );
+  } catch {
+    activeShift = null;
+  }
+
+  let result;
+  try {
+    result = await returnsQueries.createWithStockReconciliation(
+      payload,
+      scope,
+      { shift: activeShift, userId: req.user?.id || null }
+    );
+  } catch (err) {
+    // Pass through the validation / over-return errors with their own
+    // status + code so the frontend can show a precise message.
+    const status = Number(err.status) || 500;
+    return res.status(status).json({
+      error: err.message || "Failed to create return",
+      code: err.code || null,
+      productId: err.productId || null,
+      productName: err.productName || null,
+      originalQty: err.originalQty,
+      alreadyReturned: err.alreadyReturned,
+      remainingQty: err.remainingQty,
+      requested: err.requested,
+      available: err.available,
+    });
+  }
+
+  // SSE fan-out: a fresh return event for the returns page, plus one
+  // stock event per line item so inventory subscribers see the
+  // restock / damaged-out.
+  try {
+    const eventScope = requireRealtimeScope(req, result.return);
+    realtimeHub.publish(
+      realtimeHub.buildReturnEvent({
+        action: "created",
+        ret: { ...result.return, items: result.items },
+        scope: eventScope,
+      })
+    );
+    for (const movement of result.stockMovements) {
+      realtimeHub.publish(
+        realtimeHub.buildStockEvent({
+          action: "created",
+          movement,
+          product: result.updatedStock.find(
+            (p) => Number(p.id) === Number(movement.productId)
+          ) || null,
+          crossedLowStock: false,
+          scope: eventScope,
+        })
+      );
+    }
+    if (result.cashMovement) {
+      realtimeHub.publish(
+        realtimeHub.buildShiftEvent({
+          action: "movement",
+          shift: activeShift,
+          movement: result.cashMovement,
+          storeType: activeShift.storeType,
+          storeId: activeShift.storeId,
+          userId: req.user?.id,
+        })
+      );
+    }
+  } catch (e) {
+    // Realtime is best-effort; the DB transaction already committed.
+    console.warn("[returns] realtime fan-out failed:", e.message);
+  }
+
+  // Audit-log entry so RecentActivity shows the new return without
+  // needing a refetch.
+  try {
+    await recordAudit(req, {
+      action: `return.${payload.type || "return"}`,
+      entityType: "return",
+      entityId: result.return.id != null ? String(result.return.id) : null,
+      payload: {
+        returnId: result.return.id,
+        invoiceNo: result.return.invoiceNo,
+        type: result.return.type,
+        refundMethod: result.return.refundMethod,
+        grandTotal: result.return.grandTotal,
+        itemCount: Array.isArray(result.items) ? result.items.length : 0,
+      },
+      ok: true,
+    });
+  } catch (e) {
+    console.warn("[returns] audit-log append failed:", e.message);
+  }
+
+  res.json({
+    return: { ...result.return, items: result.items },
+    stockMovements: result.stockMovements,
+  });
 });
 
 // === Product images (Upload Picture) =======================================

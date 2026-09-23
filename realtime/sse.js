@@ -124,6 +124,11 @@ const buildDefaultChannel = ({ storeType, storeId, isGlobal }) => {
     // impossible (the hub only fans out to listeners on the matching
     // channel).
     hub.CHANNELS.AUDIT(storeType, storeId),
+    // Retail returns channel — the Retail Returns page subscribes here
+    // so a return submitted in tab A shows up live in tab B. Hotel /
+    // Laundry / Service workflows do not subscribe to this channel —
+    // they keep using the existing INVOICE / SHIFT channels.
+    hub.CHANNELS.RETURN(storeType, storeId),
   ];
 };
 

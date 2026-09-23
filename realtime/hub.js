@@ -37,6 +37,12 @@ const CHANNELS = {
   // polling. The channel is per-(storeType, storeId); a SUPER_OWNER
   // listening on the global channel will receive all entries.
   AUDIT: (storeType, storeId) => `audit:${storeType || ""}:${storeId || ""}`,
+  // Retail returns channel — the Retail Returns page subscribes here so
+  // a return submitted in tab A shows up live in tab B without polling.
+  // Hotel/Laundry/Service workflows do not publish on this channel —
+  // their settlement paths (hotel checkout, kitchen bills, etc.) keep
+  // using the existing INVOICE / SHIFT channels.
+  RETURN: (storeType, storeId) => `returns:${storeType || ""}:${storeId || ""}`,
   ALL: () => "*",
 };
 
@@ -216,6 +222,20 @@ const buildAuditEvent = ({ action, entry, scope }) => ({
   ok: typeof entry?.ok === "boolean" ? entry.ok : null,
 });
 
+// Retail return event. The full `ret` (header) plus `items` array are
+// forwarded so a freshly-loaded tab can render the new return without a
+// refetch. Stock movements are NOT forwarded here — they fan out on
+// the existing STOCK channel from /api/stock-movements so any
+// inventory subscriber also sees the related restock/damaged entry.
+const buildReturnEvent = ({ action, ret, scope }) => ({
+  kind: "return",
+  action, // 'created'
+  storeType: scope?.storeType || null,
+  storeId: scope?.storeId || null,
+  channel: CHANNELS.RETURN(scope?.storeType, scope?.storeId),
+  return: ret || null,
+});
+
 module.exports = {
   CHANNELS,
   subscribe,
@@ -230,5 +250,6 @@ module.exports = {
   buildCustomerEvent,
   buildCustomerCreditEvent,
   buildAuditEvent,
+  buildReturnEvent,
   recentEvents,
 };
