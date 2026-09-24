@@ -411,18 +411,101 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn, custom
   });
 };
 
-const list = async (scope) => {
+// list: the store-scoped invoice feed.
+//
+// Ordering: `generated_at DESC, id DESC`. `generated_at` is the cashier-perceived
+// moment the bill was generated (migration 009), written as
+// `COALESCE(?, NOW(3))` on insert so it is non-NULL for anything saved after
+// that migration. The trailing `id DESC` makes the sort deterministic when two
+// invoices share a millisecond timestamp. Legacy rows predating 009 may have a
+// NULL `generated_at`; MySQL/TiDB sorts NULLs last on a DESC order, so those
+// settle at the bottom rather than being treated as "latest".
+//
+// Pagination is OPT-IN. `options.limit` (a positive integer) switches the return
+// shape from a plain array to `{ rows, total }` so the caller can render page
+// counts. Without `limit` the full list is returned exactly as before — the
+// dashboard, cash-flow, global search, and help-chat consumers all rely on
+// receiving every invoice in their store, so a silent default limit would empty
+// out their aggregates.
+//
+// The store-scope predicates below are the authorization boundary and are
+// deliberately unchanged: they are applied before any caller-supplied filter,
+// and none of `options` can widen them.
+const list = async (scope, options = {}) => {
   const conds = [];
   const params = [];
   if (scope.storeType) { conds.push("_store_type = ?"); params.push(scope.storeType); }
   if (scope.storeId)   { conds.push("_store_id = ?");   params.push(scope.storeId); }
   if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
+
+  // Caller filters. Every value is parameterized; none are interpolated.
+  const term = String(options.search == null ? "" : options.search).trim();
+  if (term) {
+    const like = `%${term}%`;
+    conds.push(
+      "(invoice_no LIKE ? OR customer_name LIKE ? OR customer_mobile LIKE ? OR billed_by LIKE ?)"
+    );
+    params.push(like, like, like, like);
+  }
+  const fromDate = String(options.fromDate == null ? "" : options.fromDate).trim();
+  if (fromDate) { conds.push("date >= ?"); params.push(fromDate); }
+  const toDate = String(options.toDate == null ? "" : options.toDate).trim();
+  if (toDate) { conds.push("date <= ?"); params.push(toDate); }
+  const paymentMode = String(options.paymentMode == null ? "" : options.paymentMode).trim();
+  if (paymentMode && paymentMode.toLowerCase() !== "all") {
+    conds.push("LOWER(payment_mode) = ?");
+    params.push(paymentMode.toLowerCase());
+  }
+
   const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-  const rows = await query(
-    `SELECT ${COLUMNS.withGen} FROM invoices ${where} ORDER BY created_at DESC, id DESC`,
+
+  // Only treat `limit` as pagination when it is a usable positive integer, so a
+  // missing/garbage value keeps the historical full-list behaviour.
+  const rawLimit = Number(options.limit);
+  const paginate = Number.isInteger(rawLimit) && rawLimit > 0;
+  const rawOffset = Number(options.offset);
+  const offset = Number.isInteger(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
+  if (!paginate) {
+    const rows = await query(
+      `SELECT ${COLUMNS.withGen} FROM invoices ${where} ORDER BY generated_at DESC, id DESC`,
+      params
+    );
+    return rows[0].map(rowToInvoice);
+  }
+
+  // Paginated: count, aggregates and the page itself all come from the same
+  // predicate set, so `total` and `stats` always describe the filtered result
+  // the caller is paging through — not just the visible page.
+  const [aggRows] = await query(
+    `SELECT COUNT(*) AS total,
+            COALESCE(SUM(grand_total), 0) AS total_amount,
+            COALESCE(SUM(gst_total), 0)   AS total_gst,
+            COALESCE(SUM(CASE WHEN date = CURDATE() THEN 1 ELSE 0 END), 0) AS today_count,
+            COALESCE(SUM(CASE WHEN date = CURDATE() THEN grand_total ELSE 0 END), 0) AS today_amount
+       FROM invoices ${where}`,
     params
   );
-  return rows[0].map(rowToInvoice);
+  const agg = (aggRows && aggRows[0]) || {};
+  const total = Number(agg.total || 0);
+
+  const rows = await query(
+    `SELECT ${COLUMNS.withGen} FROM invoices ${where}
+     ORDER BY generated_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    [...params, rawLimit, offset]
+  );
+  return {
+    rows: rows[0].map(rowToInvoice),
+    total,
+    stats: {
+      count: total,
+      totalAmount: Number(agg.total_amount || 0),
+      totalGst: Number(agg.total_gst || 0),
+      todayCount: Number(agg.today_count || 0),
+      todayAmount: Number(agg.today_amount || 0),
+    },
+  };
 };
 
 // create: insert a new invoice WITHOUT touching products. Used by
