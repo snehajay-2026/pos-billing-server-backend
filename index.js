@@ -32,6 +32,7 @@ const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
 const couponsQueries = require("./db/queries/coupons");
 const returnsQueries = require("./db/queries/returns");
+const invoiceCleanupQueries = require("./db/queries/invoice-cleanup");
 const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
@@ -3251,6 +3252,153 @@ app.post("/api/returns", ensureAuth, async (req, res) => {
   });
 });
 
+// === Invoice Cleanup (retention + dependency-checked) =======================
+//
+// The ONLY sanctioned path to permanently delete an invoice. The generic
+// `DELETE /api/:resource/:id` route refuses the `invoices` resource so that a
+// bare delete — with no role check, no store scope, no dependency check, no
+// audit and no SSE — is unreachable.
+//
+//   POST /api/invoice-cleanup/preview  — read-only analysis. Deletes nothing.
+//   POST /api/invoice-cleanup/execute  — permanent deletion, gated on a
+//                                        mandatory in-transaction re-check.
+//
+// Scope: retail / service / laundry. Hotel is refused — its settlement path
+// writes `hotel_state` JSON and `hotel_bookings` rather than `invoices` rows,
+// and the lodging/dining realtime architecture must not be disturbed.
+//
+// Roles:
+//   CASHIER     — 403 on both
+//   STORE_ADMIN — allowed, but only inside the store their session resolves to
+//   ADMIN       — allowed in their authorized scope
+//   SUPER_OWNER — allowed; still bound to a concrete store scope for a delete
+const requireInvoiceCleanupAdmin = (req, res) => {
+  const role = String(req.user?.role || "").toUpperCase();
+  if (role === "CASHIER") {
+    res.status(403).json({
+      error: "Invoice cleanup is restricted to admin roles",
+    });
+    return false;
+  }
+  return true;
+};
+
+// Resolve the store the cleanup may act on. getRequestScope already pins
+// ordinary users and STORE_ADMINs to their session store, so a cross-store
+// request resolves to the caller's OWN store rather than widening access.
+// A delete additionally requires a concrete store — an unscoped SUPER_OWNER
+// must name the store they intend to clean, so "clean everything" is never a
+// one-click operation.
+const getCleanupScope = (req) => {
+  const { storeType, storeId } = getAuthorizedLookupScope(req);
+  if (!storeType || !storeId) {
+    const err = new Error("Select a store before running invoice cleanup");
+    err.status = 400;
+    throw err;
+  }
+  return { storeType, storeId };
+};
+
+const readRetentionYears = (req) => {
+  const body = req.body || {};
+  return invoiceCleanupQueries.normalizeRetentionYears(body.retentionYears);
+};
+
+// POST /api/invoice-cleanup/preview
+// Read-only. Returns candidate / eligible / blocked counts, the blocked-reason
+// breakdown, and an approximate size. Mutates nothing and writes no audit row.
+app.post("/api/invoice-cleanup/preview", ensureAuth, async (req, res) => {
+  if (!requireInvoiceCleanupAdmin(req, res)) return;
+  try {
+    const scope = getCleanupScope(req);
+    const retentionYears = readRetentionYears(req);
+    const result = await invoiceCleanupQueries.preview(scope, { retentionYears });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// POST /api/invoice-cleanup/execute
+// Permanent deletion. Requires an explicit confirmation phrase that embeds the
+// eligible count from preview, so an operator cannot confirm a number they did
+// not read. The dependency re-check runs INSIDE the delete transaction, so an
+// invoice that gained a return since preview is skipped, never deleted.
+app.post("/api/invoice-cleanup/execute", ensureAuth, async (req, res) => {
+  if (!requireInvoiceCleanupAdmin(req, res)) return;
+  try {
+    const scope = getCleanupScope(req);
+    const retentionYears = readRetentionYears(req);
+    const body = req.body || {};
+
+    // Confirmation gate. The phrase is derived from the CURRENT eligible set,
+    // not from anything the client asserts.
+    const current = await invoiceCleanupQueries.preview(scope, {
+      retentionYears,
+    });
+    const expected = `DELETE ${current.eligible} INVOICES`;
+    if (String(body.confirmation || "").trim().toUpperCase() !== expected) {
+      return res.status(400).json({
+        error: "Confirmation text does not match",
+        expected,
+        eligible: current.eligible,
+      });
+    }
+
+    const result = await invoiceCleanupQueries.execute(scope, { retentionYears });
+
+    // Audit AFTER a successful commit, so a failed run never leaves a
+    // success-looking trail. One summary row, not one per invoice — a
+    // per-invoice audit would grow at exactly the rate this feature removes.
+    // `recordAudit` injects userEmail / userRole / storeType / storeId into
+    // the payload, and audit_log has no FK, so the row survives the very
+    // invoices it describes.
+    try {
+      await recordAudit(req, {
+        action: "invoice.cleanup",
+        entityType: "invoice_cleanup",
+        entityId: `cleanup-${Date.now()}`,
+        payload: {
+          retentionYears: result.retentionYears,
+          storeType: result.storeType,
+          storeId: result.storeId,
+          previewEligible: current.eligible,
+          totalCandidates: result.totalCandidates,
+          eligible: result.eligible,
+          blocked: result.blocked,
+          blockedReasons: result.blockedReasons,
+          deleted: result.deletedCount,
+          skipped: result.skipped,
+        },
+        ok: true,
+      });
+    } catch (e) {
+      console.warn("[invoice-cleanup] audit-log append failed:", e.message);
+    }
+
+    // Realtime: refresh invoice lists in the cleaned store only. The scope
+    // comes from the authorized lookup, so Store A's cleanup can never
+    // refresh or expose Store B.
+    if (result.deletedCount > 0) {
+      try {
+        realtimeHub.publish(
+          realtimeHub.buildInvoiceEvent({
+            action: "cleanup",
+            invoice: { deletedCount: result.deletedCount },
+            scope: { storeType: result.storeType, storeId: result.storeId },
+          })
+        );
+      } catch (e) {
+        console.warn("[invoice-cleanup] realtime publish failed:", e.message);
+      }
+    }
+
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 // === Product images (Upload Picture) =======================================
 //
 // Routes:
@@ -3958,6 +4106,24 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
 
 app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
   const { resource, id } = req.params;
+  // Invoices are deliberately excluded from the generic delete.
+  //
+  // `invoices` has no foreign key pointing at it anywhere in the schema —
+  // returns, payment intents and work orders all reference it by a soft
+  // `invoice_no` string. A bare `DELETE FROM invoices WHERE id = ?` would
+  // therefore orphan those rows silently, and `invoices` is absent from both
+  // AUDITED_GENERIC_RESOURCES and REALTIME_RESOURCE_KINDS, so the row would
+  // vanish with no audit trail and no SSE refresh.
+  //
+  // Permanent deletion goes through the cleanup workflow instead, which
+  // enforces role, store scope, retention, dependency checks, an in-transaction
+  // re-check, an explicit confirmation, and an audit summary.
+  if (resource === "invoices") {
+    return res.status(409).json({
+      error: "Invoices cannot be deleted directly. Use the invoice cleanup workflow.",
+      hint: "POST /api/invoice-cleanup/preview, then POST /api/invoice-cleanup/execute",
+    });
+  }
   const mysqlQueries = mysqlResources[resource];
   if (!mysqlQueries) {
     return res.status(501).json({
