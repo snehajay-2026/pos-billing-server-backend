@@ -3956,6 +3956,37 @@ const resolveHistoryCustomer = async (req, res) => {
   return { customer, scope: { storeType: scope.storeType, storeId: scope.storeId } };
 };
 
+// GET /api/customers/search?q=…
+//
+// Dedicated substring search for the Retail POS "Search Existing Customer"
+// picker. Declared before the generic `/api/:resource` catch-all so it is
+// matched here rather than being read as a resource named "search".
+//
+// This exists because the generic path funnels `?name=` into customers.list(),
+// which emits `` `name` = ? `` — EXACT equality. Typing "Ash" for a customer
+// stored as "Asha Rao" returned nothing, so Customer Management customers were
+// invisible at the till even though they existed, were approved, and were in
+// the right store.
+//
+// Store isolation is unchanged: the query scopes on _store_type + _store_id
+// from getRequestScope, so Store A never sees Store B's book. Billing
+// eligibility is deliberately NOT filtered here — `resolveBillableCustomer`
+// re-validates approval at checkout, and the POS applies the same
+// approved-only rule client-side, so one rule covers every role.
+app.get("/api/customers/search", ensureAuth, async (req, res) => {
+  const term = String(req.query.q || "").trim();
+  if (!term) {
+    // An empty term must not dump the whole customer book.
+    return res.json([]);
+  }
+  const scope = getRequestScope(req);
+  if (!scope.storeType || !scope.storeId) {
+    return res.status(403).json({ error: "A store selection is required" });
+  }
+  const results = await customersQueries.search(scope, { q: term });
+  return res.json(results);
+});
+
 app.get("/api/customers/:id/purchase-history", ensureAuth, async (req, res) => {
   const resolved = await resolveHistoryCustomer(req, res);
   if (!resolved) return;

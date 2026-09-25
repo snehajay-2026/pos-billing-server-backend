@@ -113,6 +113,58 @@ const list = async (scope, query_ = {}) => {
   return rows[0].map(rowToCustomer);
 };
 
+// search: server-side substring search for the Retail POS "Search Existing
+// Customer" picker.
+//
+// Why this exists separately from `list`: `list` passes unknown query keys
+// straight into `buildWhere`, which emits `` `name` = ? `` — EXACT equality.
+// A cashier who types "Ash" against a customer stored as "Asha Rao" therefore
+// gets zero rows back, which is what made Customer Management customers look
+// missing from POS. The POS code even documented the opposite behaviour
+// ("exact substrings the cashier typed"), so the mismatch was silent.
+//
+// A dedicated path rather than loosening `buildWhere`: that helper also backs
+// `findByIdScopedForManage` and the write paths, where an exact `?name=` filter
+// is a legitimate safety property. Changing it globally would widen those.
+//
+// Matching is a substring across the three identifier fields a cashier
+// actually types — name, phone and GSTIN — all of which exist on the schema.
+// `approvalStatus` is NOT filtered here: the decision of who is billable
+// belongs to the caller, and `resolveBillableCustomer` re-validates it at
+// checkout regardless. Callers filter on the client so one rule applies to
+// every role.
+const search = async (scope, query_ = {}) => {
+  const term = String(query_?.q || query_?.term || "").trim();
+  // An empty search would return the entire customer book, which is exactly
+  // what the brief forbids downloading. Callers must type first.
+  if (!term) return [];
+
+  // Store scope first — an unscoped search would leak another store's book.
+  const conds = [];
+  const params = [];
+  if (scope.storeType) {
+    conds.push("_store_type = ?");
+    params.push(scope.storeType);
+  }
+  if (scope.storeId) {
+    conds.push("_store_id = ?");
+    params.push(scope.storeId);
+  }
+
+  const like = `%${term}%`;
+  conds.push("(name LIKE ? OR phone LIKE ? OR IFNULL(gstin, '') LIKE ?)");
+  params.push(like, like, like);
+
+  const rows = await query(
+    `SELECT ${COLUMNS} FROM customers
+      WHERE ${conds.join(" AND ")}
+      ORDER BY name ASC, id ASC
+      LIMIT 20`,
+    params
+  );
+  return rows[0].map(rowToCustomer);
+};
+
 const findById = async (id) => {
   const rows = await query(
     `SELECT ${COLUMNS} FROM customers WHERE id = ? LIMIT 1`,
@@ -304,6 +356,7 @@ const deleteById = async (id) => {
 
 module.exports = {
   list,
+  search,
   findById,
   findByIdScoped,
   findByIdScopedForManage,

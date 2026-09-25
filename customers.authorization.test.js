@@ -449,3 +449,131 @@ test("findByIdScopedForManage() cross-store guard still applies for STORE_ADMIN"
   assert.ok(!where.sql.includes("_user_email"));
   assert.deepEqual(where.params, ["service", "A"]);
 });
+
+// === search() — POS "Search Existing Customer" ===========================
+//
+// The generic list() path passes ?name= through buildWhere, which emits
+// `name` = ?  (EXACT equality). A cashier typing "Ash" against a customer
+// stored as "Asha Rao" got zero rows back, so Customer Management customers
+// were invisible at the till. search() is a dedicated substring path used by
+// the POS picker; these tests pin that behaviour and the store boundary.
+
+const customerRow = (over = {}) => ({
+  id: 7,
+  name: "Asha Rao",
+  phone: "9999999999",
+  email: null,
+  address: null,
+  notes: null,
+  gstin: "27ABCDE1234F1Z5",
+  approval_status: "approved",
+  approved_by_email: "admin@a.com",
+  approved_at: null,
+  rejected_by_email: null,
+  rejected_at: null,
+  rejection_reason: null,
+  created_by_email: "admin@a.com",
+  _store_type: "retail",
+  _store_id: "store-1",
+  _user_email: "admin@a.com",
+  created_at: "2026-01-01 00:00:00.000",
+  updated_at: null,
+  ...over,
+});
+
+test("search: an empty term returns nothing instead of the whole book", async () => {
+  fakePool.__lastQueries = [];
+  const rows = await customersQueries.search({ storeType: "retail", storeId: "store-1" }, { q: "  " });
+  assert.deepEqual(rows, []);
+  assert.equal(fakePool.__lastQueries.length, 0, "must not hit the DB for an empty term");
+});
+
+test("search: matches on a name SUBSTRING, which exact-equality list() could not", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[customerRow()], []]);
+  const rows = await customersQueries.search(
+    { storeType: "retail", storeId: "store-1" },
+    { q: "Ash" }
+  );
+  const { sql, params } = fakePool.__lastQueries[0];
+  // Substring, not equality.
+  assert.match(sql, /name LIKE \?/);
+  assert.doesNotMatch(sql, /`name` = \?/);
+  // The term is parameterised, never interpolated.
+  assert.equal(params[params.length - 1], "%Ash%");
+  assert.equal(rows[0].name, "Asha Rao");
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: covers name, phone and GSTIN in one OR", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[], []]);
+  await customersQueries.search({ storeType: "retail", storeId: "store-1" }, { q: "999" });
+  const { sql, params } = fakePool.__lastQueries[0];
+  assert.match(sql, /name LIKE \?/);
+  assert.match(sql, /phone LIKE \?/);
+  assert.match(sql, /IFNULL\(gstin, ''\) LIKE \?/);
+  // One like-pattern, three placeholders.
+  assert.equal(params.filter((p) => p === "%999%").length, 3);
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: store scope is always applied, so Store B cannot be reached", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[], []]);
+  await customersQueries.search({ storeType: "retail", storeId: "store-B" }, { q: "Ash" });
+  const { sql, params } = fakePool.__lastQueries[0];
+  assert.match(sql, /_store_type = \?/);
+  assert.match(sql, /_store_id = \?/);
+  assert.deepEqual(params.slice(0, 2), ["retail", "store-B"]);
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: never filters by _user_email — the book is shared per store", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[], []]);
+  await customersQueries.search(
+    { storeType: "retail", storeId: "store-1", email: "cashier@a.com" },
+    { q: "Ash" }
+  );
+  // Scoped to the WHERE clause — the SELECT list legitimately names the column.
+  const where = fakePool.__lastQueries[0].sql.split("WHERE")[1];
+  assert.doesNotMatch(where, /_user_email/);
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: caps results and orders by name so the list is stable", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[], []]);
+  await customersQueries.search({ storeType: "retail", storeId: "store-1" }, { q: "a" });
+  const { sql } = fakePool.__lastQueries[0];
+  assert.match(sql, /ORDER BY name ASC, id ASC/);
+  assert.match(sql, /LIMIT 20/);
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: does not filter approval — billing eligibility is re-checked at checkout", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[customerRow({ approval_status: "pending" })], []]);
+  const rows = await customersQueries.search(
+    { storeType: "retail", storeId: "store-1" },
+    { q: "Ash" }
+  );
+  // A pending customer is still returned; the POS filters client-side and
+  // resolveBillableCustomer rejects it at checkout. One rule, every role.
+  // Checked on the WHERE clause — the SELECT list names the column.
+  const where = fakePool.__lastQueries[0].sql.split("WHERE")[1];
+  assert.doesNotMatch(where, /approval_status/);
+  assert.equal(rows[0].approvalStatus, "pending");
+  fakePool.__setQueryImpl(null);
+});
+
+test("search: is read-only", async () => {
+  fakePool.__lastQueries = [];
+  fakePool.__setQueryImpl(() => [[], []]);
+  await customersQueries.search({ storeType: "retail", storeId: "store-1" }, { q: "Ash" });
+  const { sql } = fakePool.__lastQueries[0];
+  assert.match(sql.trim(), /^SELECT/i);
+  assert.doesNotMatch(sql, /\bINSERT\b|\bUPDATE\b|\bDELETE\b/i);
+  fakePool.__setQueryImpl(null);
+});
