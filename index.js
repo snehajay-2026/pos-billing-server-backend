@@ -32,6 +32,7 @@ const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
 const couponsQueries = require("./db/queries/coupons");
 const returnsQueries = require("./db/queries/returns");
+const customerHistoryQueries = require("./db/queries/customer-history");
 const invoiceCleanupQueries = require("./db/queries/invoice-cleanup");
 const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
@@ -3911,6 +3912,89 @@ app.post("/api/customers/:id/approve", ensureAuth, async (req, res) => {
   }
 
   return res.json(updated);
+});
+
+// === Customer purchase history (Phase 2A — read-only) =======================
+//
+//   GET /api/customers/:id/purchase-history?page=&pageSize=
+//   GET /api/customers/:id/summary
+//
+// Both are READ-ONLY. Nothing here writes, and per the brief no audit row is
+// created for a normal page view — the ledger is already the record.
+//
+// Declared BEFORE the generic `/api/:resource` catch-all so the `:id`
+// sub-resource path is matched here rather than falling through.
+//
+// IDOR: the customer id in the URL is NEVER trusted on its own. It is resolved
+// through findByIdScoped, which enforces the caller's authorized store. A
+// customer id belonging to another store resolves to null and returns 404 —
+// the same convention the rest of the API uses, so the response does not
+// reveal that the id exists somewhere else.
+//
+// Derived from `invoices` (the authoritative ledger) with
+// `idx_invoices_customer (customer_id, _store_type, _store_id)`. No history
+// table is created or copied.
+const resolveHistoryCustomer = async (req, res) => {
+  const { id } = req.params;
+  const scope = getRequestScope(req);
+  const parsed = Number(id);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    res.status(400).json({ error: "Invalid customer id" });
+    return null;
+  }
+  // A concrete store is required: without one the query could not be scoped,
+  // and an unscoped history is exactly the cross-store leak this guards.
+  if (!scope.storeType || !scope.storeId) {
+    res.status(403).json({ error: "A store selection is required" });
+    return null;
+  }
+  const customer = await customersQueries.findByIdScoped(parsed, scope);
+  if (!customer) {
+    res.status(404).json({ error: "Customer not found" });
+    return null;
+  }
+  return { customer, scope: { storeType: scope.storeType, storeId: scope.storeId } };
+};
+
+app.get("/api/customers/:id/purchase-history", ensureAuth, async (req, res) => {
+  const resolved = await resolveHistoryCustomer(req, res);
+  if (!resolved) return;
+  try {
+    const result = await customerHistoryQueries.purchaseHistory({
+      customerId: resolved.customer.id,
+      scope: resolved.scope,
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+    });
+    return res.json({
+      customer: {
+        id: resolved.customer.id,
+        name: resolved.customer.name,
+        phone: resolved.customer.phone,
+        gstin: resolved.customer.gstin,
+        approvalStatus: resolved.customer.approvalStatus,
+        storeType: resolved.scope.storeType,
+        storeId: resolved.scope.storeId,
+      },
+      ...result,
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/customers/:id/summary", ensureAuth, async (req, res) => {
+  const resolved = await resolveHistoryCustomer(req, res);
+  if (!resolved) return;
+  try {
+    const totals = await customerHistoryQueries.summary({
+      customerId: resolved.customer.id,
+      scope: resolved.scope,
+    });
+    return res.json({ customer: resolved.customer, summary: totals });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/:resource", ensureAuth, async (req, res) => {
