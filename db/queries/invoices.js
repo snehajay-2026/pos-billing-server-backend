@@ -431,12 +431,49 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn, custom
 // The store-scope predicates below are the authorization boundary and are
 // deliberately unchanged: they are applied before any caller-supplied filter,
 // and none of `options` can widen them.
+//
+// `_user_email` is applied per role, because a manager's job is to see the
+// whole store. This previously applied the email clause to EVERY caller, so a
+// STORE_ADMIN's invoice list, cash flow, and global search all silently showed
+// only the invoices they had personally raised — the floor's other cashiers'
+// sales were invisible. It also hit an unscoped SUPER_OWNER, who saw their own
+// invoices rather than the platform-wide view they are entitled to.
+//
+// Admin roles therefore read the whole authorized store; CASHIER keeps the
+// email clause, which is a real restriction and is not being widened here.
+// This mirrors `findByIdScopedForManage` in customers.js and the
+// `includeEmail: false` read path in orders.js — both of which already treat
+// "the store is shared, ownership only gates writes".
+//
+// WRITE ownership is unaffected: `findByIdScoped` below still applies the
+// email clause for every role, and it is what the generic PUT/DELETE handler
+// uses to stop one user mutating another's row. Attribution is unaffected too:
+// `billed_by` and `_user_email` are still selected and mapped, so the UI can
+// show who raised each invoice — seeing the creator is not the same as being
+// restricted to your own rows.
+//
+// The rule is an ALLOWLIST, not `role !== "ADMIN"`. `normalizeRole`
+// (db/queries/users.js) coerces any unrecognised role to CASHIER, so
+// negation is only accidentally correct today; a role added to VALID_ROLES
+// later would silently widen read access. Denying by default means a future
+// role is refused until someone decides otherwise. This matches DASHBOARD_ROLES
+// in db/queries/dashboard.js and CUSTOMER_APPROVER_ROLES in index.js.
+const LIST_STORE_WIDE_ROLES = new Set(["SUPER_OWNER", "ADMIN", "STORE_ADMIN"]);
+
+const listScopeIncludesEmail = (scope) => {
+  const role = String(scope?.role || "").toUpperCase();
+  return !LIST_STORE_WIDE_ROLES.has(role);
+};
+
 const list = async (scope, options = {}) => {
   const conds = [];
   const params = [];
   if (scope.storeType) { conds.push("_store_type = ?"); params.push(scope.storeType); }
   if (scope.storeId)   { conds.push("_store_id = ?");   params.push(scope.storeId); }
-  if (scope.email)     { conds.push("_user_email = ?"); params.push(scope.email); }
+  if (listScopeIncludesEmail(scope) && scope.email) {
+    conds.push("_user_email = ?");
+    params.push(scope.email);
+  }
 
   // Caller filters. Every value is parameterized; none are interpolated.
   const term = String(options.search == null ? "" : options.search).trim();
@@ -675,4 +712,7 @@ module.exports = {
   update,
   deleteById,
   rowToInvoice,
+  // Exported for the authorization test suite — the read-scope decision is a
+  // security boundary and is asserted directly rather than only through SQL.
+  listScopeIncludesEmail,
 };
