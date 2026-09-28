@@ -27,6 +27,7 @@ const shiftsQueries = require("./db/queries/shifts");
 const hotelModuleLocksQueries = require("./db/queries/hotel-module-locks");
 const paymentsQueries = require("./db/queries/payments");
 const reportsQueries = require("./db/queries/reports");
+const dashboardQueries = require("./db/queries/dashboard");
 const inventoryQueries = require("./db/queries/inventory");
 const laundryQueries = require("./db/queries/laundry");
 const auditLogQueries = require("./db/queries/audit-log");
@@ -2479,6 +2480,48 @@ const requireReportAccess = (req, res) => {
   return true;
 };
 
+// Resolve the store scope a report is allowed to read.
+//
+// These routes used to forward `req.query` straight into the aggregation, so
+// `requireReportAccess` was the ONLY boundary — and it only rejects CASHIER.
+// An ADMIN or STORE_ADMIN could therefore read any tenant by appending
+// `?storeType=retail&storeId=other-store`, and the `_store_type`/`_store_id`
+// predicates in reports.js faithfully applied it.
+//
+// `getRequestScope(req)` is the authorization source used by every other route
+// in this file: for a non-SUPER_OWNER it reads the session store and IGNORES
+// caller-supplied `?storeType`/`?storeId` entirely; for a SUPER_OWNER it
+// honours them as an explicit narrowing hint, and returns nulls when they are
+// absent, preserving the existing platform-wide view.
+const scalarQuery = (value) => {
+  if (Array.isArray(value)) return value.length === 1 ? String(value[0] || "").trim() : "";
+  return value == null ? "" : String(value).trim();
+};
+
+// `from`/`to` are compared against the DATE column `invoices.date` with
+// inclusive string bounds. Reject anything that isn't a plain YYYY-MM-DD
+// rather than letting it through as a bound that silently matches no rows —
+// an empty result the caller cannot distinguish from "no sales that day" is a
+// worse answer than a 400.
+const isYmd = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+// Returns the filter object for reports.js, or null after sending a 400.
+const buildReportFilters = (req, res) => {
+  const from = scalarQuery(req.query?.from);
+  const to = scalarQuery(req.query?.to);
+  if ((from && !isYmd(from)) || (to && !isYmd(to))) {
+    res.status(400).json({ error: "from and to must be YYYY-MM-DD" });
+    return null;
+  }
+  const scope = getRequestScope(req);
+  return {
+    from: from || undefined,
+    to: to || undefined,
+    storeType: scope.storeType || null,
+    storeId: scope.storeId || null,
+  };
+};
+
 const toCsv = (rows) => {
   if (!rows.length) return "";
   const headers = Object.keys(rows[0]);
@@ -2495,27 +2538,35 @@ const toCsv = (rows) => {
 
 app.get("/api/reports/sales", ensureAuth, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
-  res.json(await reportsQueries.salesReport(req.query));
+  const filters = buildReportFilters(req, res);
+  if (!filters) return;
+  res.json(await reportsQueries.salesReport(filters));
 });
 
 app.get("/api/reports/gst", ensureAuth, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
-  res.json(await reportsQueries.gstReport(req.query));
+  const filters = buildReportFilters(req, res);
+  if (!filters) return;
+  res.json(await reportsQueries.gstReport(filters));
 });
 
 app.get("/api/reports/pnl", ensureAuth, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
-  res.json(await reportsQueries.pnlReport(req.query));
+  const filters = buildReportFilters(req, res);
+  if (!filters) return;
+  res.json(await reportsQueries.pnlReport(filters));
 });
 
 app.get("/api/reports/export", ensureAuth, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
+  const filters = buildReportFilters(req, res);
+  if (!filters) return;
   const type = String(req.query.type || "sales");
   let report;
   let filename;
   let rows;
   if (type === "sales") {
-    report = await reportsQueries.salesReport(req.query);
+    report = await reportsQueries.salesReport(filters);
     filename = `sales-${new Date().toISOString().slice(0, 10)}.csv`;
     rows = report.buckets.map((b) => ({
       day: b.day,
@@ -2524,7 +2575,7 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
       gst: b.gst,
     }));
   } else if (type === "gst") {
-    report = await reportsQueries.gstReport(req.query);
+    report = await reportsQueries.gstReport(filters);
     filename = `gst-${new Date().toISOString().slice(0, 10)}.csv`;
     rows = report.hsns.map((h) => ({
       hsn: h.hsn,
@@ -2533,7 +2584,7 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
       tax: h.tax,
     }));
   } else if (type === "pnl") {
-    report = await reportsQueries.pnlReport(req.query);
+    report = await reportsQueries.pnlReport(filters);
     filename = `pnl-${new Date().toISOString().slice(0, 10)}.csv`;
     rows = report.expensesByCategory.map((e) => ({
       category: e.category,
@@ -2553,6 +2604,38 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   res.send(csv);
+});
+
+// === Mobile Manager Dashboard ===============================================
+//
+// One consolidated, read-only aggregate so the dashboard needs a single
+// round-trip on a mobile network instead of one per card.
+//
+// Declared here, above the generic `app.get("/api/:resource")` catch-all —
+// below it, "dashboard" is not in `mysqlResources` and the request would 501
+// rather than 404, which is a baffling failure for a real route.
+//
+// Two boundaries, both server-side (the frontend `ProtectedRoute` is UX only):
+//   - Role: deny-by-default allowlist of the three admin roles. CASHIER is
+//     refused here regardless of what the client renders.
+//   - Store scope: filters come from `getRequestScope(req)`, never from
+//     `req.query`. A non-SUPER_OWNER's `?storeType`/`?storeId` are ignored, so
+//     one store's admin cannot read another's numbers; a SUPER_OWNER may
+//     narrow explicitly, and with no selection stays platform-wide.
+app.get("/api/dashboard/summary", ensureAuth, async (req, res) => {
+  if (!dashboardQueries.isDashboardRoleAllowed(req.user?.role)) {
+    return res.status(403).json({ error: "Manager dashboard is admin-only" });
+  }
+  const filters = buildReportFilters(req, res);
+  if (!filters) return;
+  const scope = getRequestScope(req);
+  res.json(
+    await dashboardQueries.summary(scope, {
+      from: filters.from,
+      to: filters.to,
+      storeType: scope.storeType,
+    })
+  );
 });
 
 // === Generic audit append helpers =========================================
