@@ -33,6 +33,9 @@ const getPool = () => {
   return poolRef;
 };
 
+// Pure SQL-expression builder; safe to require eagerly, no DB access.
+const { discountSumSql } = require("../../lib/discount-sql");
+
 // ---------------------------------------------------------------------------
 // Authorization
 // ---------------------------------------------------------------------------
@@ -49,17 +52,20 @@ const isDashboardRoleAllowed = (role) =>
 // SQL building blocks (pure — exported for the authorization test suite)
 // ---------------------------------------------------------------------------
 
-// `invoices.discount` is a JSON column shaped { type, value, source }, so the
-// obvious `SUM(discount)` is meaningless and always yields 0 (the bug
-// reports.js:66 has). `discount_breakdown.totalSavings` is the figure the POS
-// itself computed at checkout from the PRE-discount subtotal, which makes it
-// both exact and the one number that agrees with the printed receipt.
+// The canonical discount expression, shared with reports.js, shifts.js and
+// customer-history.js so a report can never disagree with another report or
+// with the printed receipt.
 //
-// We deliberately do not recompute it from `discount.value`: `sub_total` is
-// stored POST-discount, so a percent discount would need the pre-discount base
-// to be evaluated and is not recoverable from these columns. The
-// percent-off-post-discount-base expression in shifts.js has that bug.
-const DISCOUNT_SUM_SQL = "COALESCE(SUM(JSON_EXTRACT(discount_breakdown, '$.totalSavings')), 0)";
+// This module originally hardcoded `SUM(JSON_EXTRACT(discount_breakdown,
+// '$.totalSavings'))`, which is correct for Retail and Hotel but returned 0 for
+// Service — that vertical writes `{ bill: <number>, taxableAmount }` with no
+// `totalSavings` key, and it has no line discounts, so `bill` IS its whole
+// discount. The shared expression falls back to `$.bill` when it is numeric.
+//
+// We deliberately do not recompute anything from `discount.value`:
+// `sub_total` is stored POST-discount, so a percent cannot be re-derived from
+// the row at all. See lib/discount-sql.js for the full per-vertical breakdown.
+const DISCOUNT_SUM_SQL = discountSumSql("discount", "discount_breakdown");
 
 // Invoice status values are free-form; the frontend's live set is
 // pending | paid | cleared | cancelled. Cancelled bills are excluded from the

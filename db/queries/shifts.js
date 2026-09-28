@@ -30,6 +30,7 @@
 // total sales / per-method collections / GST / discount / bill count.
 
 const { query, withTransaction } = require("../pool");
+const { discountSumSql } = require("../../lib/discount-sql");
 
 const SHIFT_COLUMNS =
   "id, user_id, store_type, store_id, branch_name, customer_email, opened_by_user_id, closed_by_user_id, status, opening_float, closing_cash, total_sales, variance, expected_cash, notes, close_notes, opened_at, closed_at";
@@ -311,18 +312,7 @@ const invoiceTotals = async (shiftId) => {
        COUNT(*) AS bills,
        COALESCE(SUM(grand_total), 0) AS sales,
        COALESCE(SUM(gst_total), 0) AS gst,
-       COALESCE(SUM(
-         CASE
-           WHEN discount IS NULL THEN 0
-           WHEN JSON_TYPE(discount) = 'OBJECT' AND JSON_EXTRACT(discount, '$.value') IS NOT NULL THEN
-             CASE JSON_EXTRACT(discount, '$.type')
-               WHEN 'flat'    THEN CAST(JSON_EXTRACT(discount, '$.value') AS DECIMAL(12,2))
-               WHEN 'percent' THEN CAST(COALESCE(i.sub_total, 0) * JSON_EXTRACT(discount, '$.value') / 100 AS DECIMAL(12,2))
-               ELSE 0
-             END
-           ELSE 0
-         END
-       ), 0) AS discount,
+       ${discountSumSql("i.discount", "i.discount_breakdown")} AS discount,
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'cash' THEN grand_total ELSE 0 END), 0) AS cash,
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'upi'  THEN grand_total ELSE 0 END), 0) AS upi,
        COALESCE(SUM(CASE WHEN LOWER(payment_mode) = 'card' THEN grand_total ELSE 0 END), 0) AS card,

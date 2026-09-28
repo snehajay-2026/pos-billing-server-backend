@@ -16,6 +16,7 @@
 // at checkout time — no recomputation needed.
 
 const { query } = require("../pool");
+const { discountSumSql } = require("../../lib/discount-sql");
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -57,13 +58,18 @@ const salesReport = async (filters = {}) => {
   const where = buildScopeWhere(filters);
 
   // Aggregate totals.
+  //
+  // `discount` is a JSON column, so the previous `SUM(discount)` summed a
+  // JSON object and always produced 0. The canonical per-row expression now
+  // lives in lib/discount-sql.js and reads the monetary figure the POS
+  // actually stored — see that file for the per-vertical shapes.
   const totalsRows = await query(
     `SELECT
        COUNT(*) AS invoice_count,
        COALESCE(SUM(sub_total), 0) AS revenue_subtotal,
        COALESCE(SUM(gst_total), 0) AS gst_collected,
        COALESCE(SUM(grand_total), 0) AS grand_total,
-       COALESCE(SUM(discount), 0) AS discount_total
+       ${discountSumSql("discount", "discount_breakdown")} AS discount_total
      FROM invoices ${where.sql}`,
     where.params
   );

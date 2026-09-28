@@ -19,6 +19,7 @@
 // NEVER attributed to a named customer. No fuzzy matching on name/mobile/email.
 
 const { query } = require("../pool");
+const { discountSumSql, discountAmountSql } = require("../../lib/discount-sql");
 
 // The invoice column list. Mirrors invoices.js `COLUMNS_BASE` so the shape the
 // UI already knows how to render (InvoiceList / InvoiceView) is unchanged —
@@ -64,7 +65,7 @@ const SUMMARY_SQL = `
   SELECT
     COUNT(*) AS total_invoices,
     COALESCE(SUM(i.sub_total), 0) AS total_subtotal,
-    COALESCE(SUM(i.discount_breakdown->>'$.bill'), 0) AS total_bill_discount,
+    ${discountSumSql("i.discount", "i.discount_breakdown")} AS total_bill_discount,
     COALESCE(SUM(i.gst_total), 0) AS total_gst,
     COALESCE(SUM(i.grand_total), 0) AS total_purchase_amount,
     MIN(i.generated_at) AS first_purchase_at,
@@ -167,7 +168,7 @@ const purchaseHistory = async ({ customerId, scope, page = 1, pageSize = 10 }) =
     query(
       `SELECT ${INVOICE_COLUMNS},
               ${RETURN_AGGREGATE_EXPRESSIONS},
-              COALESCE(i.discount_breakdown->>'$.bill', 0) AS bill_discount
+              ${discountAmountSql("i.discount", "i.discount_breakdown")} AS bill_discount
          FROM invoices i
         WHERE i.customer_id = ?
           AND i._store_type = ?
