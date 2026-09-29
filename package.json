@@ -15,7 +15,8 @@
     "test:dashboard": "node --test dashboard.authorization.test.js",
     "test:invoices": "node --test invoice.authorization.test.js invoice-list-scope.authorization.test.js",
     "test:discount": "node --test discount-sql.test.js shift-discount.test.js",
-    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js audit-log.authorization.test.js returns.authorization.test.js dashboard.authorization.test.js invoice-list-scope.authorization.test.js discount-sql.test.js shift-discount.test.js"
+    "test:customerSearch": "node --test customer-search-route.authorization.test.js",
+    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js audit-log.authorization.test.js returns.authorization.test.js dashboard.authorization.test.js invoice-list-scope.authorization.test.js discount-sql.test.js shift-discount.test.js customer-search-route.authorization.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
