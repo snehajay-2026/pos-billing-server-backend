@@ -35,10 +35,25 @@ const couponsQueries = require("./db/queries/coupons");
 const returnsQueries = require("./db/queries/returns");
 const customerHistoryQueries = require("./db/queries/customer-history");
 const invoiceCleanupQueries = require("./db/queries/invoice-cleanup");
+const plansQueries = require("./db/queries/plans");
+const subscriptionsQueries = require("./db/queries/subscriptions");
+const superOverviewQueries = require("./db/queries/super-overview");
+const superTenantsQueries = require("./db/queries/super-tenants");
+const subscriptionEventsQueries = require("./db/queries/subscription-events");
+const paymentRecordsQueries = require("./db/queries/payment-records");
+const webhookEventsQueries = require("./db/queries/webhook-events");
+const legacyAllowlistQueries = require("./db/queries/legacy-allowlist");
+const subscriptionService = require("./lib/subscription-service");
+const { buildSubscriptionRouteHandlers } = require("./lib/subscription-routes");
+const { requireActiveSubscription } = require("./lib/require-active-subscription");
+const { mountBodyParsers } = require("./lib/webhook-middleware");
+const { createWebhookHandler } = require("./lib/subscription-webhook-route");
+const razorpay = require("./lib/razorpay");
 const { withTransaction } = require("./db/pool");
 const { runRuntimeMigrations, runTableMigrations } = require("./db/runtime-migrations");
 const { sanitizePublicInvoice, getPublicStoreChrome } = require("./lib/publicInvoice");
 const { getRequestScope } = require("./lib/request-scope");
+const { canUpdateUser, canDeleteUser, sanitizeUserPatch } = require("./lib/user-access");
 const {
   findAuthorizedInvoiceByNo,
   getAuthorizedInvoiceScope,
@@ -334,7 +349,11 @@ app.options("*", cors({
   },
   credentials: true,
 }));
-app.use(express.json());
+// Body-parser wiring lives in lib/webhook-middleware.js (shared with the
+// route-level regression test so the raw-before-JSON order cannot regress
+// in one consumer and not the other). The webhook path gets the raw bytes;
+// every other route keeps normal express.json() behavior.
+mountBodyParsers(app);
 app.use(cookieParser());
 
 // CSRF protection — double-submit cookie pattern. On login the server sets
@@ -353,6 +372,9 @@ const CSRF_PUBLIC_PATHS = new Set([
   "/api/register/available",
   "/api/password-reset/request",
   "/api/password-reset/confirm",
+  // Razorpay webhook — comes from Razorpay's servers, not the browser.
+  // Authenticated by HMAC signature, not CSRF token.
+  "/api/subscriptions/webhook",
 ]);
 
 const csrfProtection = (req, res, next) => {
@@ -371,6 +393,74 @@ const csrfProtection = (req, res, next) => {
 };
 
 app.use(csrfProtection);
+
+// ===========================================================================
+// Subscription entitlement gate
+// ===========================================================================
+//
+// requireActiveSubscription sits between ensureAuth (which populates
+// req.user) and the business handlers. It is deliberately applied
+// per-route rather than as a global app.use so that:
+//
+//   - authentication endpoints work before any subscription exists,
+//   - subscription management (create / cancel / my / plans / get-by-id)
+//     stays reachable when a tenant is expired (otherwise they could
+//     never renew),
+//   - the Razorpay webhook stays reachable (unauthenticated, HMAC-signed),
+//   - hotel module locks keep their own access rules untouched.
+//
+// Missing-row tenants are denied unless explicitly present in the
+// SUPER_OWNER-approved legacy allowlist (db/queries/legacy-allowlist.js).
+// Lookup failure fails closed. legacyAllowMissing=false + the real
+// allowlist is the production posture; the legacy flag path remains only
+// for unit tests that inject no allowlist module.
+const checkSubscription = requireActiveSubscription({
+  subscriptionsQueries,
+  legacyAllowMissing: false,
+  legacyAllowlist: legacyAllowlistQueries,
+});
+
+// Paths where checkSubscription must NOT run even though ensureAuth does.
+// Kept as exact-match strings (no regex/prefix games) so a future route
+// cannot accidentally inherit an exemption. The generic catch-all routes
+// ("/api/:resource" etc.) never appear here — they are always gated.
+const SUBSCRIPTION_EXEMPT_PATHS = new Set([
+  "/api/auth/user",
+  "/api/subscriptions",
+  "/api/subscriptions/my",
+  "/api/subscriptions/config",
+  "/api/subscriptions/verify",
+  "/api/subscriptions/plans",
+  "/api/subscriptions/plans/active",
+  "/api/hotel/module-locks",
+  "/api/hotel/module-locks/me",
+]);
+
+function isSubscriptionExempt(req) {
+  if (SUBSCRIPTION_EXEMPT_PATHS.has(req.path)) return true;
+  // POST /api/subscriptions/plans  → exempt (covered above by exact match)
+  // PUT  /api/subscriptions/plans/:id → prefix match on the collection path
+  if (req.path.startsWith("/api/subscriptions/plans/")) return true;
+  // POST /api/subscriptions/:id/cancel → any cancel path under /api/subscriptions/
+  // (except the already-exempt exact paths above). Careful: this must NOT
+  // match GET /api/subscriptions/:id — the read path stays gated.
+  if (req.method === "POST" && /^\/api\/subscriptions\/[^/]+\/cancel$/.test(req.path)) return true;
+  // PUT /api/hotel/module-locks/:customerEmail/:module → SUPER_OWNER-only
+  // management route with its own authorization; not a SaaS-gated resource.
+  if (req.path.startsWith("/api/hotel/module-locks/")) return true;
+  return false;
+}
+
+// Wraps ensureAuth + entitlement check in one chain for every tenant-gated
+// route: authenticate first, skip the gate for the exempt renewal/management
+// paths, enforce it everywhere else.
+function ensureAuthWithSubscription(req, res, next) {
+  ensureAuth(req, res, (err) => {
+    if (err) return next(err);
+    if (!req.user || isSubscriptionExempt(req)) return next();
+    return checkSubscription(req, res, next);
+  });
+}
 
 // Per-endpoint rate-limit stores. Each gets its own Map so a flood on one
 // endpoint doesn't impact another.
@@ -547,7 +637,7 @@ const getOwnershipFields = (currentUser) => {
   return { ownerEmail, rootOwnerEmail };
 };
 
-app.get("/api/users", ensureAuth, async (req, res) => {
+app.get("/api/users", ensureAuthWithSubscription, async (req, res) => {
   if (req.user.role === "SUPER_OWNER") {
     return res.json(sanitizeUsers(await usersQueries.listAll()));
   }
@@ -556,7 +646,7 @@ app.get("/api/users", ensureAuth, async (req, res) => {
   );
 });
 
-app.post("/api/users", ensureAuth, async (req, res) => {
+app.post("/api/users", ensureAuthWithSubscription, async (req, res) => {
   const currentUser = req.user;
   let { email, password, role, storeType, storeId, approved = false, ...rest } = req.body || {};
 
@@ -626,7 +716,7 @@ app.post("/api/users", ensureAuth, async (req, res) => {
   return res.json(sanitizeUser(created));
 });
 
-app.put("/api/users/:id", ensureAuth, async (req, res) => {
+app.put("/api/users/:id", ensureAuthWithSubscription, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
   const updates = req.body || {};
@@ -640,6 +730,14 @@ app.put("/api/users/:id", ensureAuth, async (req, res) => {
     return res.status(403).json({ error: "Insufficient permissions to update this user" });
   }
 
+  // Tenant boundary: an ADMIN/STORE_ADMIN may only update users in their
+  // own tenant (derived key match). Fails closed with 404 so the decision
+  // is indistinguishable from a scoped-lookup miss.
+  const updateDecision = canUpdateUser(currentUser, targetUser, updates);
+  if (!updateDecision.ok) {
+    return res.status(updateDecision.status).json({ error: updateDecision.error });
+  }
+
   if (updates.email && updates.email !== targetUser.email) {
     if (await usersQueries.existsByEmail(updates.email)) {
       return res.status(400).json({ error: "Email already exists" });
@@ -647,19 +745,23 @@ app.put("/api/users/:id", ensureAuth, async (req, res) => {
   }
 
   // Map camelCase → snake_case for the queries module.
-  const patch = {};
-  if (updates.email) patch.email = String(updates.email).toLowerCase();
-  if (updates.role) patch.role = updates.role;
-  if (updates.storeType !== undefined) patch.store_type = updates.storeType;
-  if (updates.storeId !== undefined) patch.store_id = updates.storeId;
-  if (updates.ownerEmail !== undefined) patch.owner_email = updates.ownerEmail;
-  if (updates.rootOwnerEmail !== undefined) patch.root_owner_email = updates.rootOwnerEmail;
-  if (updates.approved !== undefined) patch.approved = !!updates.approved;
-  if (updates.status) patch.status = updates.status;
-  if (updates.name !== undefined) patch.name = updates.name;
-  if (updates.phone !== undefined) patch.phone = updates.phone;
-  if (updates.address !== undefined) patch.address = updates.address;
-  if (updates.password) patch.password = bcrypt.hashSync(updates.password, 10);
+  const rawPatch = {};
+  if (updates.email) rawPatch.email = String(updates.email).toLowerCase();
+  if (updates.role) rawPatch.role = updates.role;
+  if (updates.storeType !== undefined) rawPatch.store_type = updates.storeType;
+  if (updates.storeId !== undefined) rawPatch.store_id = updates.storeId;
+  if (updates.ownerEmail !== undefined) rawPatch.owner_email = updates.ownerEmail;
+  if (updates.rootOwnerEmail !== undefined) rawPatch.root_owner_email = updates.rootOwnerEmail;
+  if (updates.approved !== undefined) rawPatch.approved = !!updates.approved;
+  if (updates.status) rawPatch.status = updates.status;
+  if (updates.name !== undefined) rawPatch.name = updates.name;
+  if (updates.phone !== undefined) rawPatch.phone = updates.phone;
+  if (updates.address !== undefined) rawPatch.address = updates.address;
+  if (updates.password) rawPatch.password = bcrypt.hashSync(updates.password, 10);
+  // Server-owned identity fields (owner_email/root_owner_email) are
+  // stripped for non-SUPER_OWNER callers — they are stamped at creation
+  // and rewriting them would detach a user from their tenant.
+  const patch = sanitizeUserPatch(currentUser, rawPatch);
 
   const updated = await usersQueries.update(id, patch);
   if (updated) {
@@ -696,7 +798,7 @@ app.put("/api/users/:id", ensureAuth, async (req, res) => {
   return res.json(sanitizeUser(updated));
 });
 
-app.delete("/api/users/:id", ensureAuth, async (req, res) => {
+app.delete("/api/users/:id", ensureAuthWithSubscription, async (req, res) => {
   const currentUser = req.user;
   const { id } = req.params;
   const targetUser = await usersQueries.findById(id);
@@ -707,6 +809,13 @@ app.delete("/api/users/:id", ensureAuth, async (req, res) => {
 
   if (!canManageRole(currentUser.role, targetUser.role) && currentUser.role !== "SUPER_OWNER") {
     return res.status(403).json({ error: "Insufficient permissions to delete this user" });
+  }
+
+  // Same tenant boundary as the update path: cross-tenant deletes fail
+  // closed with 404.
+  const deleteDecision = canDeleteUser(currentUser, targetUser);
+  if (!deleteDecision.ok) {
+    return res.status(deleteDecision.status).json({ error: deleteDecision.error });
   }
 
   await usersQueries.deleteById(id);
@@ -807,7 +916,7 @@ app.post("/api/password-reset/confirm", async (req, res) => {
   res.json({ ok: true, message: "Password has been reset. Please log in." });
 });
 
-app.get("/api/store-settings", ensureAuth, async (req, res) => {
+app.get("/api/store-settings", ensureAuthWithSubscription, async (req, res) => {
   const scopeKey = getStoreSettingsScopeKey(req);
   // Try the requested scope first, then fall back to 'global' so the
   // first GET after a fresh install returns an empty object instead of
@@ -819,7 +928,7 @@ app.get("/api/store-settings", ensureAuth, async (req, res) => {
   res.json(payload);
 });
 
-app.post("/api/store-settings", ensureAuth, async (req, res) => {
+app.post("/api/store-settings", ensureAuthWithSubscription, async (req, res) => {
   const payload = req.body || {};
   const scopeKey = getStoreSettingsScopeKey(req);
   const { storeType, storeId } = getRequestScope(req);
@@ -845,11 +954,11 @@ app.post("/api/store-settings", ensureAuth, async (req, res) => {
   res.json(saved ?? {});
 });
 
-app.get("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
+app.get("/api/hotel/checkout-history", ensureAuthWithSubscription, async (req, res) => {
   res.json(await hotelQueries.getSlice("checkout-history"));
 });
 
-app.get("/api/hotel/dining-bills", ensureAuth, async (req, res) => {
+app.get("/api/hotel/dining-bills", ensureAuthWithSubscription, async (req, res) => {
   res.json(await hotelQueries.getSlice("dining-bills"));
 });
 
@@ -914,6 +1023,455 @@ app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req
   }
 });
 
+// === Subscription / Plan Management =========================================
+//
+// Tenant-scoped, NOT store-scoped. A subscription belongs to a
+// root_owner_email — the same key hotel_module_locks uses to identify a
+// tenant owner. Store scope is irrelevant here: there is no per-store
+// subscription, so the tenant email is the only key that matters.
+//
+// Three price concepts, never blurred:
+//   A. plans.monthly_price / plans.yearly_price  — the catalogue price
+//   B. subscriptions.subscribed_price            — the snapshot at subscribe
+//      time; editing the catalogue never rewrites this
+//   C. payment_records.amount                    — the actual money that moved
+//
+// SUPER_OWNER manages the catalogue and may read any tenant's subscription.
+// ADMIN and below may only ever read their OWN tenant's row.
+
+// --- Plan catalogue (SUPER_OWNER manages, everyone reads) --------------------
+
+// List all plans. Any authenticated user can read the catalogue so the
+// plan-selection UI can render it.
+app.get("/api/subscriptions/plans", ensureAuth, async (req, res) => {
+  try {
+    const plans = await plansQueries.list({ activeOnly: false });
+    res.json(plans);
+  } catch (err) {
+    console.error("Failed to list plans:", err);
+    res.status(500).json({ error: "Failed to load plans" });
+  }
+});
+
+// List active plans only — for the plan-selection UI.
+app.get("/api/subscriptions/plans/active", ensureAuth, async (req, res) => {
+  try {
+    const plans = await plansQueries.list({ activeOnly: true });
+    res.json(plans);
+  } catch (err) {
+    console.error("Failed to list active plans:", err);
+    res.status(500).json({ error: "Failed to load plans" });
+  }
+});
+
+// Create a plan. SUPER_OWNER only.
+app.post("/api/subscriptions/plans", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can create plans" });
+  }
+  const {
+    name,
+    monthlyPrice,
+    yearlyPrice,
+    trialDays,
+    active,
+    providerPlanId,
+    providerPlanIdYearly,
+  } = req.body || {};
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ error: "Plan name is required" });
+  }
+  try {
+    const plan = await plansQueries.create({
+      name: name.trim(),
+      monthlyPrice: Number(monthlyPrice) || 0,
+      yearlyPrice: Number(yearlyPrice) || 0,
+      trialDays: Number(trialDays) || 0,
+      active: active !== false,
+      // Nullable: a NULL cycle is simply not purchasable (PROVIDER_PLAN_MISSING).
+      providerPlanId: providerPlanId ?? null,
+      providerPlanIdYearly: providerPlanIdYearly ?? null,
+    });
+    res.status(201).json(plan);
+  } catch (err) {
+    console.error("Failed to create plan:", err);
+    res.status(500).json({ error: "Failed to create plan" });
+  }
+});
+
+// Update a plan. SUPER_OWNER only. Only name, prices, trial_days, active,
+// and the two provider plan IDs are mutable — nothing else.
+app.put("/api/subscriptions/plans/:id", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can edit plans" });
+  }
+  const { id } = req.params;
+  const {
+    name,
+    monthlyPrice,
+    yearlyPrice,
+    trialDays,
+    active,
+    providerPlanId,
+    providerPlanIdYearly,
+  } = req.body || {};
+  const fields = {};
+  if (name !== undefined) fields.name = String(name).trim();
+  if (monthlyPrice !== undefined) fields.monthly_price = Number(monthlyPrice) || 0;
+  if (yearlyPrice !== undefined) fields.yearly_price = Number(yearlyPrice) || 0;
+  if (trialDays !== undefined) fields.trial_days = Number(trialDays) || 0;
+  if (active !== undefined) fields.active = !!active;
+  if (providerPlanId !== undefined) fields.provider_plan_id = providerPlanId || null;
+  if (providerPlanIdYearly !== undefined) fields.provider_plan_id_yearly = providerPlanIdYearly || null;
+  try {
+    const plan = await plansQueries.update(Number(id), fields);
+    if (!plan) {
+      return res.status(404).json({ error: "Plan not found" });
+    }
+    res.json(plan);
+  } catch (err) {
+    console.error("Failed to update plan:", err);
+    res.status(500).json({ error: "Failed to update plan" });
+  }
+});
+
+// --- Subscription (tenant-scoped) -------------------------------------------
+
+// Get the current tenant's subscription. Any authenticated user can read
+// their own tenant's subscription — the tenant email is derived from the
+// session by the service's resolveTenantEmail, never from the request body
+// or query params. A forged tenantEmail in the payload is ignored for every
+// non-SUPER_OWNER role.
+app.get("/api/subscriptions/my", ensureAuth, async (req, res) => {
+  // Tenant is derived from the session only. A STORE_ADMIN or CASHIER
+  // therefore reads the parent ADMIN tenant's subscription and cannot
+  // address another tenant's (a forged tenantEmail in the payload is
+  // ignored by design).
+  const tenantEmail = subscriptionService.resolveTenantEmail(req.user);
+  try {
+    const subscription = await subscriptionsQueries.findByTenant(tenantEmail);
+    if (!subscription) {
+      return res.json(null);
+    }
+    // Attach recent events and payment records for the subscription detail view.
+    const [events, payments] = await Promise.all([
+      subscriptionEventsQueries.listBySubscription(subscription.id, { limit: 20 }),
+      paymentRecordsQueries.listBySubscription(subscription.id, { limit: 20 }),
+    ]);
+    res.json({ ...subscription, events, payments });
+  } catch (err) {
+    console.error("Failed to read own subscription:", err);
+    res.status(500).json({ error: "Failed to load subscription" });
+  }
+});
+
+// List all subscriptions. SUPER_OWNER only — used by the SUPER_OWNER
+// subscription management dashboard.
+app.get("/api/subscriptions", ensureAuthWithSubscription, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can list all subscriptions" });
+  }
+  try {
+    const subscriptions = await subscriptionsQueries.listAll();
+    res.json(subscriptions);
+  } catch (err) {
+    console.error("Failed to list subscriptions:", err);
+    res.status(500).json({ error: "Failed to load subscriptions" });
+  }
+});
+
+// Platform overview aggregates. SUPER_OWNER only — feeds the nine
+// Super Owner Dashboard cards. Every figure is a COUNT / SUM, so the
+// response carries no personal data and no payment rows.
+app.get("/api/super/overview", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view platform overview" });
+  }
+  try {
+    res.json(await superOverviewQueries.getOverview());
+  } catch (err) {
+    console.error("Failed to load platform overview:", err);
+    res.status(500).json({ error: "Failed to load platform overview" });
+  }
+});
+
+// Platform payment history. SUPER_OWNER only — feeds the Super Owner
+// Payments page. Tenant identity comes from the parent subscription row
+// (subscriptions.tenant_email), never from request parameters. Page and
+// limit are validated server-side; status is allowlisted against the
+// payment_records ENUM. Records carry only the UI allowlist — no secrets,
+// no user personal data.
+app.get("/api/super/payment-records", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view platform payment records" });
+  }
+  const rawStatus = req.query.status;
+  const status =
+    rawStatus === undefined || rawStatus === null || rawStatus === ""
+      ? undefined
+      : String(rawStatus);
+  if (status !== undefined && !paymentRecordsQueries.PAYMENT_STATUSES.has(status)) {
+    return res.status(400).json({ error: "Invalid status filter" });
+  }
+  try {
+    const { page, limit } = paymentRecordsQueries.normalizePlatformPaging(
+      req.query.page,
+      req.query.limit
+    );
+    const filters = { status, page, limit };
+    const [total, { records }] = await Promise.all([
+      paymentRecordsQueries.countPlatformPayments(filters),
+      paymentRecordsQueries.listPlatformPayments(filters),
+    ]);
+    res.json({ records, total, page, limit });
+  } catch (err) {
+    console.error("Failed to load platform payment records:", err);
+    res.status(500).json({ error: "Failed to load platform payment records" });
+  }
+});
+
+// Platform subscription-event history. SUPER_OWNER only — feeds the event
+// section of the Super Owner Payments page. Tenant identity comes from the
+// parent subscription row (subscriptions.tenant_email), never from request
+// parameters. Page and limit are validated server-side. Events carry only
+// the UI allowlist — the raw payload JSON is never selected, so provider
+// internals in webhook payloads cannot leak.
+app.get("/api/super/subscription-events", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view platform subscription events" });
+  }
+  try {
+    const { page, limit } = subscriptionEventsQueries.normalizePlatformPaging(
+      req.query.page,
+      req.query.limit
+    );
+    const [total, { events }] = await Promise.all([
+      subscriptionEventsQueries.countPlatformEvents(),
+      subscriptionEventsQueries.listPlatformEvents({ page, limit }),
+    ]);
+    res.json({ events, total, page, limit });
+  } catch (err) {
+    console.error("Failed to load platform subscription events:", err);
+    res.status(500).json({ error: "Failed to load platform subscription events" });
+  }
+});
+
+// Platform tenant directory. SUPER_OWNER only — feeds the Super Owner
+// Tenants page. Tenants are derived from persisted user rows via the
+// established identity rule (root_owner_email || owner_email || email);
+// branch users fold into their owner's tenant through the same key, and
+// SUPER_OWNER rows are excluded. Page and limit are validated
+// server-side. Rows carry only the UI allowlist — no password hashes,
+// session data, secrets, or raw user records.
+app.get("/api/super/tenants", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view platform tenants" });
+  }
+  try {
+    const { page, limit } = superTenantsQueries.normalizePlatformPaging(
+      req.query.page,
+      req.query.limit
+    );
+    const [total, { tenants }] = await Promise.all([
+      superTenantsQueries.countPlatformTenants(),
+      superTenantsQueries.listPlatformTenants({ page, limit }),
+    ]);
+    res.json({ tenants, total, page, limit });
+  } catch (err) {
+    console.error("Failed to load platform tenants:", err);
+    res.status(500).json({ error: "Failed to load platform tenants" });
+  }
+});
+
+// Tenant detail. SUPER_OWNER only — feeds the Super Owner tenant detail
+// view. Registered AFTER the listing route above: Express matches routes
+// in order, so /api/super/tenants still hits the list handler while any
+// deeper path reaches this handler. The email segment is decoded by
+// Express, validated, and matched against the canonical derived tenant
+// key — never trusted as an identity by itself.
+app.get("/api/super/tenants/:tenantEmail", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view platform tenants" });
+  }
+  try {
+    const result = await superTenantsQueries.getTenantDetail(req.params.tenantEmail);
+    if (result?.invalid) {
+      return res.status(400).json({ error: "Invalid tenant identifier" });
+    }
+    if (result?.notFound) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error("Failed to load platform tenant detail:", err);
+    res.status(500).json({ error: "Failed to load platform tenant detail" });
+  }
+});
+
+// Get a specific subscription by ID. SUPER_OWNER can read any; ADMIN and
+// below can only read their own tenant's subscription.
+app.get("/api/subscriptions/:id", ensureAuthWithSubscription, async (req, res) => {
+  const { id } = req.params;
+  try {
+    const subscription = await subscriptionsQueries.findById(Number(id));
+    if (!subscription) {
+      return res.status(404).json({ error: "Subscription not found" });
+    }
+    // Non-SUPER_OWNER can only read their own tenant's subscription.
+    if (req.user?.role !== "SUPER_OWNER") {
+      const tenantEmail = subscriptionService.resolveTenantEmail(req.user);
+      if (subscription.tenantEmail !== tenantEmail) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+    }
+    const [events, payments] = await Promise.all([
+      subscriptionEventsQueries.listBySubscription(subscription.id, { limit: 20 }),
+      paymentRecordsQueries.listBySubscription(subscription.id, { limit: 20 }),
+    ]);
+    res.json({ ...subscription, events, payments });
+  } catch (err) {
+    console.error("Failed to read subscription:", err);
+    res.status(500).json({ error: "Failed to load subscription" });
+  }
+});
+
+// --- Subscription lifecycle (routes delegate to the service) ---------------
+//
+// Create and cancel go through lib/subscription-service.js, which owns the
+// full rule set: role authorization, tenant resolution, plan selection,
+// price snapshotting, provider calls, local persistence, and event logging.
+// The route handlers are thin — they live in lib/subscription-routes.js
+// and are unit-tested in isolation. index.js only wires the deps and binds
+// the handlers to express routes.
+//
+// STORE_ADMIN may VIEW the tenant subscription but must NOT create or
+// cancel. CASHIER must NOT manage at all.
+
+const { createHandler, cancelHandler, configHandler, verifyHandler } = buildSubscriptionRouteHandlers({
+  subscriptionService,
+  plansQueries,
+  subscriptionsQueries,
+  subscriptionEventsQueries,
+  razorpay,
+  razorpayConfig: {
+    keyId: process.env.RAZORPAY_KEY_ID,
+    keySecret: process.env.RAZORPAY_KEY_SECRET,
+  },
+  withTransaction,
+});
+
+// Create a subscription. The body must contain:
+//   planId       — the LOCAL plan catalogue ID (NOT a Razorpay plan ID)
+//   billingCycle — "monthly" | "yearly"
+//   tenantEmail  — SUPER_OWNER only; the tenant to subscribe on behalf of.
+//                  Ignored for every other role (forged values cannot
+//                  redirect the subscription anywhere else).
+//
+// Price, provider plan ID, and tenant email are all derived server-side:
+// amount and provider plan IDs in the body are silently ignored by the
+// service.
+//
+// The new local subscription starts in `trialing` — this route does NOT mark
+// it active. Only the verified Razorpay webhook promotes the subscription
+// after the first payment is captured.
+//
+// Response shape:
+//   { subscription: <local>, checkout: { shortUrl } }
+// `shortUrl` is the hosted Razorpay Checkout URL the frontend should send the
+// user to. Only short_url is forwarded; every other provider field is
+// dropped at the route layer.
+app.post("/api/subscriptions", ensureAuth, createHandler);
+
+// Cancel a subscription. Only SUPER_OWNER and ADMIN may cancel. The
+// service enforces the tenant match: an ADMIN can only cancel their own
+// tenant's subscription.
+app.post("/api/subscriptions/:id/cancel", ensureAuth, cancelHandler);
+
+// Public Razorpay keyId for the Checkout page. Returns ONLY { keyId }.
+// The keySecret is never present in the response, never logged, never
+// echoed in an error message. ADMIN/SUPER_OWNER only.
+app.get("/api/subscriptions/config", ensureAuth, configHandler);
+
+// Post-redirect signature check. Verifies the Checkout redirect genuinely
+// came from Razorpay; records an audit event; does NOT mark the
+// subscription active (webhook remains authoritative). ADMIN/SUPER_OWNER
+// only.
+app.post("/api/subscriptions/verify", ensureAuth, verifyHandler);
+
+// --- Webhook receiver (Razorpay) --------------------------------------------
+//
+// This is the AUTHORITATIVE payment confirmation path. The frontend
+// success callback is NOT sufficient — only a verified webhook from
+// Razorpay marks a subscription as active.
+//
+// Idempotency: payment_records.provider_payment_id carries a UNIQUE
+// constraint. A replayed webhook hits the duplicate key and is treated
+// as a no-op rather than a second capture.
+//
+// CSRF is NOT applied here — webhook calls come from Razorpay's servers,
+// not from the browser. The route is registered before csrfProtection
+// or is added to CSRF_PUBLIC_PATHS.
+
+// Single-line registration: subscription-entitlement.authorization.test.js
+// matches route source lines by prefix.
+app.post("/api/subscriptions/webhook", createWebhookHandler({ paymentRecordsQueries, subscriptionsQueries, subscriptionEventsQueries, webhookEventsQueries, withTransaction }));
+
+// --- Legacy tenant allowlist (SUPER_OWNER only) -------------------------------
+//
+// Tenants explicitly approved to operate without a subscription row.
+// Canonical key = rootOwnerEmail || ownerEmail || email, trimmed +
+// lowercased. Exact match only. Every add/remove is audit-logged via
+// subscription_events? No — via console + response; the audit requirement
+// is met by recording approved_by_email/reason/timestamps in the row and
+// logging the actor action server-side. Non-SUPER_OWNER gets 403; the
+// entitlement path fails closed on lookup error.
+app.get("/api/super/legacy-allowlist", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can view the legacy allowlist" });
+  }
+  try {
+    res.json({ entries: await legacyAllowlistQueries.list() });
+  } catch (err) {
+    console.error("Failed to load legacy allowlist:", err);
+    res.status(500).json({ error: "Failed to load legacy allowlist" });
+  }
+});
+
+app.post("/api/super/legacy-allowlist", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can manage the legacy allowlist" });
+  }
+  const { tenantKey, reason } = req.body || {};
+  if (!tenantKey || !String(tenantKey).trim()) {
+    return res.status(400).json({ error: "tenantKey is required" });
+  }
+  try {
+    const entry = await legacyAllowlistQueries.add(tenantKey, {
+      approvedBy: req.user.email,
+      reason: reason || null,
+    });
+    console.error(`[legacy-allowlist] ADD ${entry.tenantKey} by ${req.user.email}`);
+    res.status(201).json({ entry });
+  } catch (err) {
+    console.error("Failed to add legacy allowlist entry:", err);
+    res.status(500).json({ error: "Failed to add legacy allowlist entry" });
+  }
+});
+
+app.delete("/api/super/legacy-allowlist/:tenantKey", ensureAuth, async (req, res) => {
+  if (req.user?.role !== "SUPER_OWNER") {
+    return res.status(403).json({ error: "Only Super Owner can manage the legacy allowlist" });
+  }
+  try {
+    const entry = await legacyAllowlistQueries.remove(req.params.tenantKey);
+    console.error(`[legacy-allowlist] REMOVE ${entry.tenantKey} by ${req.user.email}`);
+    res.json({ removed: entry.tenantKey });
+  } catch (err) {
+    console.error("Failed to remove legacy allowlist entry:", err);
+    res.status(500).json({ error: "Failed to remove legacy allowlist entry" });
+  }
+});
+
 // === Hotel bookings (per-store, per-room-or-table) =========================
 // Replaces the JSON-blob approach in hotel_state.tables. Each row is a
 // real booking with proper store scoping so two devices logging into
@@ -922,7 +1480,7 @@ app.put("/api/hotel/module-locks/:customerEmail/:module", ensureAuth, async (req
 // Routes are registered BEFORE /api/hotel/:resource catch-all so they
 // don't fall through.
 
-app.get("/api/hotel/bookings", ensureAuth, async (req, res) => {
+app.get("/api/hotel/bookings", ensureAuthWithSubscription, async (req, res) => {
   const scope = getAuthorizedLookupScope(req);
   const bookings = await hotelBookingsQueries.listByStore({
     ...scope,
@@ -932,7 +1490,7 @@ app.get("/api/hotel/bookings", ensureAuth, async (req, res) => {
   res.json(bookings);
 });
 
-app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
+app.post("/api/hotel/bookings", ensureAuthWithSubscription, async (req, res) => {
   const body = req.body || {};
   if (!["dining", "lodging"].includes(String(body.kind))) {
     return res.status(400).json({ error: "kind must be 'dining' or 'lodging'" });
@@ -973,7 +1531,7 @@ app.post("/api/hotel/bookings", ensureAuth, async (req, res) => {
   res.json(booking);
 });
 
-app.put("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+app.put("/api/hotel/bookings/:id", ensureAuthWithSubscription, async (req, res) => {
   const requestScope = requireRealtimeScope(req);
   const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
   if (!existing) return res.status(404).json({ error: "Booking not found" });
@@ -989,7 +1547,7 @@ app.put("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
   res.json(updated);
 });
 
-app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
+app.delete("/api/hotel/bookings/:id", ensureAuthWithSubscription, async (req, res) => {
   const requestScope = requireRealtimeScope(req);
   const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
   if (!existing) return res.status(404).json({ error: "Booking not found" });
@@ -1006,7 +1564,7 @@ app.delete("/api/hotel/bookings/:id", ensureAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
+app.post("/api/hotel/bookings/:id/checkout", ensureAuthWithSubscription, async (req, res) => {
   const requestScope = requireRealtimeScope(req);
   const existing = await hotelBookingsQueries.findById(req.params.id, requestScope);
   if (!existing) return res.status(404).json({ error: "Booking not found" });
@@ -1032,7 +1590,7 @@ app.post("/api/hotel/bookings/:id/checkout", ensureAuth, async (req, res) => {
 // which the listener silently dropped, breaking cross-device realtime
 // for Clear Table. We re-read the now-checked-out row so the broadcast
 // carries the merged guest / customer-mobile / check-in fields too.
-app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => {
+app.post("/api/hotel/bookings/checkout-by-ref", ensureAuthWithSubscription, async (req, res) => {
   const { kind, refId } = req.body || {};
   if (!kind || !refId) {
     return res.status(400).json({ error: "kind and refId are required" });
@@ -1067,7 +1625,7 @@ app.post("/api/hotel/bookings/checkout-by-ref", ensureAuth, async (req, res) => 
 // The event's `action: "checked_out"` short-circuits that translator
 // to "vacant" — matching what the cashier's local checkout flow writes
 // into `lodgingRooms[].status`.
-app.post("/api/hotel/rooms/:id/checkout", ensureAuth, async (req, res) => {
+app.post("/api/hotel/rooms/:id/checkout", ensureAuthWithSubscription, async (req, res) => {
   const roomId = String(req.params.id || "").trim();
   if (!roomId) return res.status(400).json({ error: "room id is required" });
   const scope = requireRealtimeScope(req);
@@ -1102,7 +1660,7 @@ app.post("/api/hotel/rooms/:id/checkout", ensureAuth, async (req, res) => {
 // One connection per browser tab. Client connects on app mount, listens
 // for `booking` / `hotel` events, and merges them into local state.
 
-app.get("/api/events", ensureAuth, sseHandler);
+app.get("/api/events", ensureAuthWithSubscription, sseHandler);
 
 // === Hotel Coupons (Discount) =================================================
 // Four endpoints backing the Hotel Store discount feature:
@@ -1208,7 +1766,7 @@ app.get("/api/hotel/coupons/:code", async (req, res) => {
 // Settings UI list. Owner-only — the Settings UI doesn't render this
 // panel for cashier role anyway, but the server is the source of
 // truth and 403s any non-owner request.
-app.get("/api/hotel/coupons", ensureAuth, async (req, res) => {
+app.get("/api/hotel/coupons", ensureAuthWithSubscription, async (req, res) => {
   if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
     return res.status(403).json({ error: "owner only" });
   }
@@ -1225,7 +1783,7 @@ app.get("/api/hotel/coupons", ensureAuth, async (req, res) => {
 });
 
 // Settings UI create.
-app.post("/api/hotel/coupons", ensureAuth, async (req, res) => {
+app.post("/api/hotel/coupons", ensureAuthWithSubscription, async (req, res) => {
   if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
     return res.status(403).json({ error: "owner only" });
   }
@@ -1262,7 +1820,7 @@ app.post("/api/hotel/coupons", ensureAuth, async (req, res) => {
 
 // Settings UI update — soft-delete via `active = 0` is the standard
 // way to retire a coupon (preserves audit history).
-app.put("/api/hotel/coupons/:id", ensureAuth, async (req, res) => {
+app.put("/api/hotel/coupons/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!req.user || !["SUPER_OWNER", "ADMIN", "STORE_ADMIN"].includes(req.user.role)) {
     return res.status(403).json({ error: "owner only" });
   }
@@ -1287,7 +1845,7 @@ app.put("/api/hotel/coupons/:id", ensureAuth, async (req, res) => {
 
 // Friendly alias for the SSE endpoint so we can disambiguate it from
 // other /api/* in production logs and reverse proxies.
-app.get("/api/sse", ensureAuth, sseHandler);
+app.get("/api/sse", ensureAuthWithSubscription, sseHandler);
 
 // Lodging room layout (the physical rooms — Room 101, 102, … — that
 // every cashier sees on the Lodging tab) is owner-configured per-device
@@ -1297,11 +1855,11 @@ app.get("/api/sse", ensureAuth, sseHandler);
 // is non-empty (see HotelBilling.jsx:loadRooms), so returning `[]` keeps
 // the cashier's locally-seeded layout intact while silencing the 404 in
 // the browser console.
-app.get("/api/hotel/rooms", ensureAuth, async (req, res) => {
+app.get("/api/hotel/rooms", ensureAuthWithSubscription, async (req, res) => {
   res.json([]);
 });
 
-app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
+app.get("/api/hotel/:resource", ensureAuthWithSubscription, async (req, res) => {
   // The kebab-case resource name from the URL (e.g. "dining-waiting") is
   // the exact key hotelQueries.sliceToColumn expects — pass it through
   // unchanged.
@@ -1318,7 +1876,7 @@ app.get("/api/hotel/:resource", ensureAuth, async (req, res) => {
   res.json(await hotelQueries.getSlice(resource));
 });
 
-app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
+app.post("/api/hotel/:resource", ensureAuthWithSubscription, async (req, res) => {
   const resource = req.params.resource;
   if (req.params.resource === "module-locks") {
     return res.status(404).json({ error: "Not found" });
@@ -1331,7 +1889,7 @@ app.post("/api/hotel/:resource", ensureAuth, async (req, res) => {
   res.json(item);
 });
 
-app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
+app.delete("/api/hotel/checkout-history", ensureAuthWithSubscription, async (req, res) => {
   await hotelQueries.clearSlice("checkout-history");
   res.json({ ok: true });
 });
@@ -1345,7 +1903,7 @@ app.delete("/api/hotel/checkout-history", ensureAuth, async (req, res) => {
 // so anything reading the JSON column sees the latest status. A 404 is
 // returned when the table id isn't in the slice, which the frontend
 // treats as a no-op (the table was deleted or never added).
-app.put("/api/hotel/tables/:tableId", ensureAuth, async (req, res) => {
+app.put("/api/hotel/tables/:tableId", ensureAuthWithSubscription, async (req, res) => {
   const { tableId } = req.params;
   const payload = req.body || {};
   const merged = await hotelQueries.updateItem("tables", tableId, payload);
@@ -1355,7 +1913,7 @@ app.put("/api/hotel/tables/:tableId", ensureAuth, async (req, res) => {
   res.json(merged);
 });
 
-app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
+app.delete("/api/hotel/:resource/:id", ensureAuthWithSubscription, async (req, res) => {
   const resource = req.params.resource;
   if (!hotelQueries.sliceToColumn(resource)) {
     return res.status(404).json({ error: "Not found" });
@@ -1378,7 +1936,7 @@ app.delete("/api/hotel/:resource/:id", ensureAuth, async (req, res) => {
 // booking CRUD lives in `hotel_bookings` (see POST /api/hotel/bookings
 // above) and SSE-booking events already fan out from there. This route
 // is purely for the dining-table layout slice.
-app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
+app.put("/api/hotel/tables/:id", ensureAuthWithSubscription, async (req, res) => {
   const tableId = String(req.params.id || "");
   if (!tableId) {
     return res.status(400).json({ error: "tableId is required" });
@@ -1422,7 +1980,7 @@ app.put("/api/hotel/tables/:id", ensureAuth, async (req, res) => {
 // merging — `buildHotelEvent` ships only `event.data`, which the listener
 // silently ignores. Reusing the same shape as the Lodging route keeps
 // the listener single-purpose.
-app.post("/api/hotel/tables/:id/checkout", ensureAuth, async (req, res) => {
+app.post("/api/hotel/tables/:id/checkout", ensureAuthWithSubscription, async (req, res) => {
   const tableId = String(req.params.id || "").trim();
   if (!tableId) return res.status(400).json({ error: "table id is required" });
   const scope = requireRealtimeScope(req);
@@ -1452,7 +2010,7 @@ app.post("/api/hotel/tables/:id/checkout", ensureAuth, async (req, res) => {
   res.json(updated);
 });
 
-app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+app.put("/api/hotel/dining-bills/:tableId", ensureAuthWithSubscription, async (req, res) => {
   const scope = requireRealtimeScope(req);
   const { tableId } = req.params;
   const payload = req.body || {};
@@ -1483,7 +2041,7 @@ app.put("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
   res.json(next);
 });
 
-app.delete("/api/hotel/dining-bills/:tableId", ensureAuth, async (req, res) => {
+app.delete("/api/hotel/dining-bills/:tableId", ensureAuthWithSubscription, async (req, res) => {
   const scope = requireRealtimeScope(req);
   const { tableId } = req.params;
   // Capture the bill before deletion so other connected devices can
@@ -1531,7 +2089,7 @@ app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
   res.json({ invoice, store });
 });
 
-app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
+app.get("/api/invoices/:invoiceNo", ensureAuthWithSubscription, async (req, res) => {
   const invoice = await findAuthorizedInvoiceByNo(
     req,
     req.params.invoiceNo,
@@ -1551,7 +2109,7 @@ app.get("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
 // integer primary key "id" — always returning 404. This dedicated route
 // pairs the GET handler above: same lookup by invoice_no, same scope
 // enforcement, then delegates to update() with the resolved integer id.
-app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
+app.put("/api/invoices/:invoiceNo", ensureAuthWithSubscription, async (req, res) => {
   const scope = getAuthorizedInvoiceScope(req);
   const existing = await invoicesQueries.findByInvoiceNoScoped(req.params.invoiceNo, scope);
   if (!existing) {
@@ -1601,7 +2159,7 @@ app.put("/api/invoices/:invoiceNo", ensureAuth, async (req, res) => {
 // payload and the cashier is the source of truth for billing metadata.
 // We only require an invoiceNo + at least one line item; downstream
 // queries (invoice list, public share link) assume these fields.
-app.post("/api/invoices", ensureAuth, async (req, res) => {
+app.post("/api/invoices", ensureAuthWithSubscription, async (req, res) => {
   const invoice = req.body || {};
   const items = Array.isArray(invoice.items) ? invoice.items : [];
 
@@ -1886,7 +2444,7 @@ const validateHotelDiscount = async (discount, items, scope) => {
   return null;
 };
 
-app.post("/api/invoices/checkout", ensureAuth, async (req, res) => {
+app.post("/api/invoices/checkout", ensureAuthWithSubscription, async (req, res) => {
   const invoice = req.body || {};
   const items = Array.isArray(invoice.items) ? invoice.items : [];
 
@@ -2201,7 +2759,7 @@ const authorizeShiftAccess = async (req, res, shiftId) => {
   return { shift, forbidden: false };
 };
 
-app.get("/api/shifts/active", ensureAuth, async (req, res) => {
+app.get("/api/shifts/active", ensureAuthWithSubscription, async (req, res) => {
   const scope = requireCashVertical(req, res);
   if (!scope) return;
   const shift = await shiftsQueries.getActiveForUser(
@@ -2212,7 +2770,7 @@ app.get("/api/shifts/active", ensureAuth, async (req, res) => {
   res.json(shift || null);
 });
 
-app.get("/api/shifts", ensureAuth, async (req, res) => {
+app.get("/api/shifts", ensureAuthWithSubscription, async (req, res) => {
   const scope = requireCashVertical(req, res);
   if (!scope) return;
   const filters = { ...req.query };
@@ -2223,7 +2781,7 @@ app.get("/api/shifts", ensureAuth, async (req, res) => {
   res.json(shifts);
 });
 
-app.post("/api/shifts", ensureAuth, async (req, res) => {
+app.post("/api/shifts", ensureAuthWithSubscription, async (req, res) => {
   const scope = requireCashVertical(req, res);
   if (!scope) return;
   // Branch label / customer email are cashier-typed metadata that the
@@ -2271,14 +2829,14 @@ app.post("/api/shifts", ensureAuth, async (req, res) => {
   res.json(shift);
 });
 
-app.get("/api/shifts/:shiftId", ensureAuth, async (req, res) => {
+app.get("/api/shifts/:shiftId", ensureAuthWithSubscription, async (req, res) => {
   const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
   if (auth.forbidden) return; // authorizeShiftAccess already responded
   if (!auth.shift) return; // 404 already sent
   res.json(auth.shift);
 });
 
-app.post("/api/shifts/:shiftId/close", ensureAuth, async (req, res) => {
+app.post("/api/shifts/:shiftId/close", ensureAuthWithSubscription, async (req, res) => {
   // Ownership + store-scope check before any close work happens. Cashiers
   // can only close their own shift; admins close for cashiers in their
   // store. SUPER_OWNER is unrestricted.
@@ -2324,7 +2882,7 @@ app.post("/api/shifts/:shiftId/close", ensureAuth, async (req, res) => {
   }
 });
 
-app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
+app.get("/api/shifts/:shiftId/cash-movements", ensureAuthWithSubscription, async (req, res) => {
   const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
   if (auth.forbidden) return;
   if (!auth.shift) return;
@@ -2332,7 +2890,7 @@ app.get("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
   res.json(movements);
 });
 
-app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => {
+app.post("/api/shifts/:shiftId/cash-movements", ensureAuthWithSubscription, async (req, res) => {
   const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
   if (auth.forbidden) return;
   if (!auth.shift) return;
@@ -2378,7 +2936,7 @@ app.post("/api/shifts/:shiftId/cash-movements", ensureAuth, async (req, res) => 
   res.json(updated);
 });
 
-app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, async (req, res) => {
+app.get("/api/shifts/:shiftId/reconciliation", ensureAuthWithSubscription, async (req, res) => {
   const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
   if (auth.forbidden) return;
   if (!auth.shift) return;
@@ -2387,7 +2945,7 @@ app.get("/api/shifts/:shiftId/reconciliation", ensureAuth, async (req, res) => {
   res.json(recon);
 });
 
-app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
+app.get("/api/shifts/:shiftId/summary", ensureAuthWithSubscription, async (req, res) => {
   const auth = await authorizeShiftAccess(req, res, req.params.shiftId);
   if (auth.forbidden) return;
   if (!auth.shift) return;
@@ -2408,11 +2966,11 @@ app.get("/api/shifts/:shiftId/summary", ensureAuth, async (req, res) => {
 const generateIntentId = () =>
   `pi_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
-app.get("/api/payments/methods", ensureAuth, async (req, res) => {
+app.get("/api/payments/methods", ensureAuthWithSubscription, async (req, res) => {
   res.json(await paymentsQueries.listMethods());
 });
 
-app.post("/api/payments/intent", ensureAuth, async (req, res) => {
+app.post("/api/payments/intent", ensureAuthWithSubscription, async (req, res) => {
   const { amount, method = "upi", invoiceNo = null, note = null } = req.body || {};
   if (amount == null || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
     return res.status(400).json({ error: "amount (positive number) is required" });
@@ -2434,20 +2992,20 @@ app.post("/api/payments/intent", ensureAuth, async (req, res) => {
   res.json(intent);
 });
 
-app.get("/api/payments/intent/:id", ensureAuth, async (req, res) => {
+app.get("/api/payments/intent/:id", ensureAuthWithSubscription, async (req, res) => {
   const intent = await paymentsQueries.findById(req.params.id);
   if (!intent) return res.status(404).json({ error: "Intent not found" });
   res.json(intent);
 });
 
-app.post("/api/payments/intent/:id/mark-paid", ensureAuth, async (req, res) => {
+app.post("/api/payments/intent/:id/mark-paid", ensureAuthWithSubscription, async (req, res) => {
   const { note = null } = req.body || {};
   const intent = await paymentsQueries.setStatus(req.params.id, "paid", note);
   if (!intent) return res.status(404).json({ error: "Intent not found or invalid status" });
   res.json(intent);
 });
 
-app.post("/api/payments/intent/:id/mark-failed", ensureAuth, async (req, res) => {
+app.post("/api/payments/intent/:id/mark-failed", ensureAuthWithSubscription, async (req, res) => {
   const { note = null } = req.body || {};
   const intent = await paymentsQueries.setStatus(req.params.id, "failed", note);
   if (!intent) return res.status(404).json({ error: "Intent not found or invalid status" });
@@ -2456,7 +3014,7 @@ app.post("/api/payments/intent/:id/mark-failed", ensureAuth, async (req, res) =>
 
 // Dev-only — flips a pending intent to paid without a real gateway. Used
 // by the payment dialog's "Simulate payment" button in mock mode.
-app.post("/api/payments/intent/:id/simulate-payment", ensureAuth, async (req, res) => {
+app.post("/api/payments/intent/:id/simulate-payment", ensureAuthWithSubscription, async (req, res) => {
   const existing = await paymentsQueries.findById(req.params.id);
   if (!existing) return res.status(404).json({ error: "Intent not found" });
   if (existing.status !== "pending") {
@@ -2536,28 +3094,28 @@ const toCsv = (rows) => {
   ].join("\n");
 };
 
-app.get("/api/reports/sales", ensureAuth, async (req, res) => {
+app.get("/api/reports/sales", ensureAuthWithSubscription, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
   const filters = buildReportFilters(req, res);
   if (!filters) return;
   res.json(await reportsQueries.salesReport(filters));
 });
 
-app.get("/api/reports/gst", ensureAuth, async (req, res) => {
+app.get("/api/reports/gst", ensureAuthWithSubscription, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
   const filters = buildReportFilters(req, res);
   if (!filters) return;
   res.json(await reportsQueries.gstReport(filters));
 });
 
-app.get("/api/reports/pnl", ensureAuth, async (req, res) => {
+app.get("/api/reports/pnl", ensureAuthWithSubscription, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
   const filters = buildReportFilters(req, res);
   if (!filters) return;
   res.json(await reportsQueries.pnlReport(filters));
 });
 
-app.get("/api/reports/export", ensureAuth, async (req, res) => {
+app.get("/api/reports/export", ensureAuthWithSubscription, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
   const filters = buildReportFilters(req, res);
   if (!filters) return;
@@ -2622,7 +3180,7 @@ app.get("/api/reports/export", ensureAuth, async (req, res) => {
 //     `req.query`. A non-SUPER_OWNER's `?storeType`/`?storeId` are ignored, so
 //     one store's admin cannot read another's numbers; a SUPER_OWNER may
 //     narrow explicitly, and with no selection stays platform-wide.
-app.get("/api/dashboard/summary", ensureAuth, async (req, res) => {
+app.get("/api/dashboard/summary", ensureAuthWithSubscription, async (req, res) => {
   if (!dashboardQueries.isDashboardRoleAllowed(req.user?.role)) {
     return res.status(403).json({ error: "Manager dashboard is admin-only" });
   }
@@ -2792,7 +3350,7 @@ const resolveAuditLogScope = (req) => {
   };
 };
 
-app.get("/api/audit-log", ensureAuth, async (req, res) => {
+app.get("/api/audit-log", ensureAuthWithSubscription, async (req, res) => {
   const { userId, storeType, storeId } = resolveAuditLogScope(req);
   const result = await auditLogQueries.list({
     userId,
@@ -2818,17 +3376,17 @@ const auditLogGuard = (req, res) => {
   res.set("Allow", "GET");
   res.status(405).json({ error: "Audit log is read-only" });
 };
-app.post("/api/audit-log", ensureAuth, auditLogGuard);
-app.put("/api/audit-log", ensureAuth, auditLogGuard);
-app.delete("/api/audit-log", ensureAuth, auditLogGuard);
-app.patch("/api/audit-log", ensureAuth, auditLogGuard);
+app.post("/api/audit-log", ensureAuthWithSubscription, auditLogGuard);
+app.put("/api/audit-log", ensureAuthWithSubscription, auditLogGuard);
+app.delete("/api/audit-log", ensureAuthWithSubscription, auditLogGuard);
+app.patch("/api/audit-log", ensureAuthWithSubscription, auditLogGuard);
 
 // CSV export. Same auth + role gate as the JSON view, same store-scope
 // enforcement. We deliberately omit the request `body` (potential PII),
 // IP, and user-agent from the export columns; an admin running a
 // compliance export doesn't need them and including them would risk
 // leaking customer names or PII from request payloads.
-app.get("/api/audit-log/export", ensureAuth, async (req, res) => {
+app.get("/api/audit-log/export", ensureAuthWithSubscription, async (req, res) => {
   if (!requireReportAccess(req, res)) return;
   const { userId, storeType, storeId } = resolveAuditLogScope(req);
   const result = await auditLogQueries.list({
@@ -2947,7 +3505,7 @@ const getLaundryScope = (req) => {
   };
 };
 
-app.get("/api/laundry/token-counter", ensureAuth, async (req, res) => {
+app.get("/api/laundry/token-counter", ensureAuthWithSubscription, async (req, res) => {
   const s = getLaundryScope(req);
   res.json(await laundryQueries.getCounter({
     storeType: s.storeType,
@@ -2956,7 +3514,7 @@ app.get("/api/laundry/token-counter", ensureAuth, async (req, res) => {
   }));
 });
 
-app.post("/api/laundry/token-counter", ensureAuth, async (req, res) => {
+app.post("/api/laundry/token-counter", ensureAuthWithSubscription, async (req, res) => {
   const s = getLaundryScope(req);
   const { value = 0, day } = req.body || {};
   res.json(await laundryQueries.setCounter({
@@ -2967,7 +3525,7 @@ app.post("/api/laundry/token-counter", ensureAuth, async (req, res) => {
   }));
 });
 
-app.get("/api/laundry/ledger", ensureAuth, async (req, res) => {
+app.get("/api/laundry/ledger", ensureAuthWithSubscription, async (req, res) => {
   const s = getLaundryScope(req);
   const limit = Number(req.query.limit) || 200;
   res.json(await laundryQueries.listLedger({
@@ -2977,7 +3535,7 @@ app.get("/api/laundry/ledger", ensureAuth, async (req, res) => {
   }));
 });
 
-app.post("/api/laundry/ledger", ensureAuth, async (req, res) => {
+app.post("/api/laundry/ledger", ensureAuthWithSubscription, async (req, res) => {
   const s = getLaundryScope(req);
   const entry = await laundryQueries.addLedgerEntry({
     ...(req.body || {}),
@@ -2989,7 +3547,7 @@ app.post("/api/laundry/ledger", ensureAuth, async (req, res) => {
   res.json(entry);
 });
 
-app.delete("/api/laundry/ledger", ensureAuth, async (req, res) => {
+app.delete("/api/laundry/ledger", ensureAuthWithSubscription, async (req, res) => {
   const s = getLaundryScope(req);
   const deleted = await laundryQueries.clearLedger({
     storeType: s.storeType,
@@ -3023,26 +3581,26 @@ const getInvScope = (req) => {
 
 // === Suppliers =============================================================
 
-app.get("/api/suppliers", ensureAuth, async (req, res) => {
+app.get("/api/suppliers", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   res.json(await inventoryQueries.listSuppliers(getInvScope(req)));
 });
 
-app.post("/api/suppliers", ensureAuth, async (req, res) => {
+app.post("/api/suppliers", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const supplier = await inventoryQueries.createSupplier(req.body || {}, getInvScope(req));
   if (!supplier) return res.status(400).json({ error: "name is required" });
   res.json(supplier);
 });
 
-app.put("/api/suppliers/:id", ensureAuth, async (req, res) => {
+app.put("/api/suppliers/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const supplier = await inventoryQueries.updateSupplier(req.params.id, req.body || {}, getInvScope(req));
   if (!supplier) return res.status(404).json({ error: "Supplier not found" });
   res.json(supplier);
 });
 
-app.delete("/api/suppliers/:id", ensureAuth, async (req, res) => {
+app.delete("/api/suppliers/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const ok = await inventoryQueries.deleteSupplier(req.params.id, getInvScope(req));
   if (!ok) return res.status(404).json({ error: "Supplier not found" });
@@ -3051,33 +3609,33 @@ app.delete("/api/suppliers/:id", ensureAuth, async (req, res) => {
 
 // === Purchase Orders =======================================================
 
-app.get("/api/purchase-orders", ensureAuth, async (req, res) => {
+app.get("/api/purchase-orders", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   res.json(await inventoryQueries.listPurchaseOrders(getInvScope(req), req.query));
 });
 
-app.post("/api/purchase-orders", ensureAuth, async (req, res) => {
+app.post("/api/purchase-orders", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const po = await inventoryQueries.createPurchaseOrder(req.body || {}, getInvScope(req));
   if (!po) return res.status(400).json({ error: "poNumber and at least one valid line are required" });
   res.status(201).json(po);
 });
 
-app.put("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
+app.put("/api/purchase-orders/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const po = await inventoryQueries.updatePurchaseOrder(req.params.id, req.body || {}, getInvScope(req));
   if (!po) return res.status(404).json({ error: "Purchase order not found" });
   res.json(po);
 });
 
-app.delete("/api/purchase-orders/:id", ensureAuth, async (req, res) => {
+app.delete("/api/purchase-orders/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const ok = await inventoryQueries.deletePurchaseOrder(req.params.id, getInvScope(req));
   if (!ok) return res.status(404).json({ error: "Purchase order not found" });
   res.json({ ok: true });
 });
 
-app.post("/api/purchase-orders/:id/receive", ensureAuth, async (req, res) => {
+app.post("/api/purchase-orders/:id/receive", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const po = await inventoryQueries.receivePurchaseOrder(req.params.id, getInvScope(req));
   if (!po) return res.status(404).json({ error: "Purchase order not found" });
@@ -3086,12 +3644,12 @@ app.post("/api/purchase-orders/:id/receive", ensureAuth, async (req, res) => {
 
 // === Stock Movements =======================================================
 
-app.get("/api/stock-movements", ensureAuth, async (req, res) => {
+app.get("/api/stock-movements", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   res.json(await inventoryQueries.listStockMovements(getInvScope(req), req.query));
 });
 
-app.post("/api/stock-movements", ensureAuth, async (req, res) => {
+app.post("/api/stock-movements", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInventoryAdmin(req, res)) return;
   const scope = requireRealtimeScope(req);
   const movement = await inventoryQueries.createStockMovement(
@@ -3125,7 +3683,7 @@ app.post("/api/stock-movements", ensureAuth, async (req, res) => {
 
 // === Low-stock alerts ======================================================
 
-app.get("/api/inventory/low-stock", ensureAuth, async (req, res) => {
+app.get("/api/inventory/low-stock", ensureAuthWithSubscription, async (req, res) => {
   res.json(await inventoryQueries.lowStockAlerts(getInvScope(req)));
 });
 
@@ -3159,7 +3717,7 @@ const requireRetailScope = (req, res) => {
 
 // GET /api/returns — history of returns for the authorized store.
 // Optional ?invoiceNo= filter for the per-invoice drilldown.
-app.get("/api/returns", ensureAuth, async (req, res) => {
+app.get("/api/returns", ensureAuthWithSubscription, async (req, res) => {
   if (!requireRetailScope(req, res)) return;
   const scope = getRequestScope(req);
   // SUPER_OWNER without a store selection may need to filter; ordinary
@@ -3184,7 +3742,7 @@ app.get("/api/returns", ensureAuth, async (req, res) => {
 });
 
 // GET /api/returns/:id — full return + items.
-app.get("/api/returns/:id", ensureAuth, async (req, res) => {
+app.get("/api/returns/:id", ensureAuthWithSubscription, async (req, res) => {
   if (!requireRetailScope(req, res)) return;
   const scope = getRequestScope(req);
   const effectiveScope =
@@ -3224,7 +3782,7 @@ app.get("/api/returns/:id", ensureAuth, async (req, res) => {
 //     ref_type='return' + ref_id='return-<id>' for idempotency)
 //   - audit log entry (recordAudit)
 //   - SSE: returns channel + stock channel + shift channel
-app.post("/api/returns", ensureAuth, async (req, res) => {
+app.post("/api/returns", ensureAuthWithSubscription, async (req, res) => {
   if (!requireRetailScope(req, res)) return;
   const scope = getRequestScope(req);
   const payload = req.body || {};
@@ -3391,7 +3949,7 @@ const readRetentionYears = (req) => {
 // POST /api/invoice-cleanup/preview
 // Read-only. Returns candidate / eligible / blocked counts, the blocked-reason
 // breakdown, and an approximate size. Mutates nothing and writes no audit row.
-app.post("/api/invoice-cleanup/preview", ensureAuth, async (req, res) => {
+app.post("/api/invoice-cleanup/preview", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInvoiceCleanupAdmin(req, res)) return;
   try {
     const scope = getCleanupScope(req);
@@ -3408,7 +3966,7 @@ app.post("/api/invoice-cleanup/preview", ensureAuth, async (req, res) => {
 // eligible count from preview, so an operator cannot confirm a number they did
 // not read. The dependency re-check runs INSIDE the delete transaction, so an
 // invoice that gained a return since preview is skipped, never deleted.
-app.post("/api/invoice-cleanup/execute", ensureAuth, async (req, res) => {
+app.post("/api/invoice-cleanup/execute", ensureAuthWithSubscription, async (req, res) => {
   if (!requireInvoiceCleanupAdmin(req, res)) return;
   try {
     const scope = getCleanupScope(req);
@@ -3501,7 +4059,7 @@ const { parseFile } = require("./lib/multipart");
 // POST /api/products/:id/image
 // Replaces the product's image. Validates scope, MIME, and size before
 // writing to disk. Old file is unlinked after the new one is saved.
-app.post("/api/products/:id/image", ensureAuth, async (req, res) => {
+app.post("/api/products/:id/image", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await productsQueries.findByIdScoped(id, scope);
@@ -3543,7 +4101,7 @@ app.post("/api/products/:id/image", ensureAuth, async (req, res) => {
 // GET /api/products/:id/image
 // Streams the stored image. Auth-protected (matches the rest of the
 // products endpoints — no public product images).
-app.get("/api/products/:id/image", ensureAuth, async (req, res) => {
+app.get("/api/products/:id/image", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await productsQueries.findByIdScoped(id, scope);
@@ -3571,7 +4129,7 @@ app.get("/api/products/:id/image", ensureAuth, async (req, res) => {
 // DELETE /api/products/:id/image
 // Clears the image reference and unlinks the file. The product row is
 // otherwise untouched.
-app.delete("/api/products/:id/image", ensureAuth, async (req, res) => {
+app.delete("/api/products/:id/image", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await productsQueries.findByIdScoped(id, scope);
@@ -3592,7 +4150,7 @@ app.delete("/api/products/:id/image", ensureAuth, async (req, res) => {
 //
 // Must be declared BEFORE the generic `/api/:resource/:id` GET so
 // Express matches the more-specific path first.
-app.get("/api/services/:id/rate-history", ensureAuth, async (req, res) => {
+app.get("/api/services/:id/rate-history", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await servicesQueries.findByIdScoped(id, scope);
@@ -3633,7 +4191,7 @@ app.get("/api/services/:id/rate-history", ensureAuth, async (req, res) => {
 // Idempotency: a re-POST on the same order returns 409
 // { error, code: "ORDER_ALREADY_INVOICED" } rather than spawning a
 // second invoice.
-app.post("/api/orders/:id/invoice", ensureAuth, async (req, res) => {
+app.post("/api/orders/:id/invoice", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const body = req.body || {};
   const paymentMode = String(body.paymentMode || "").trim();
@@ -3887,7 +4445,7 @@ app.post("/api/orders/:id/invoice", ensureAuth, async (req, res) => {
 // Dedicated handler so we can also unlink the product's image file when
 // the row is deleted. Must be declared BEFORE the generic
 // `app.delete("/api/:resource/:id", ...)` so Express matches it first.
-app.delete("/api/products/:id", ensureAuth, async (req, res) => {
+app.delete("/api/products/:id", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const scope = getRequestScope(req);
   const existing = await productsQueries.findByIdScoped(id, scope);
@@ -3920,7 +4478,7 @@ app.delete("/api/products/:id", ensureAuth, async (req, res) => {
 // Express matches this route first.
 const CUSTOMER_APPROVER_ROLES = ["SUPER_OWNER", "ADMIN", "STORE_ADMIN"];
 
-app.post("/api/customers/:id/approve", ensureAuth, async (req, res) => {
+app.post("/api/customers/:id/approve", ensureAuthWithSubscription, async (req, res) => {
   const { id } = req.params;
   const role = String(req.user?.role || "").toUpperCase();
   if (!CUSTOMER_APPROVER_ROLES.includes(role)) {
@@ -4056,7 +4614,7 @@ const resolveHistoryCustomer = async (req, res) => {
 // eligibility is deliberately NOT filtered here — `resolveBillableCustomer`
 // re-validates approval at checkout, and the POS applies the same
 // approved-only rule client-side, so one rule covers every role.
-app.get("/api/customers/search", ensureAuth, async (req, res) => {
+app.get("/api/customers/search", ensureAuthWithSubscription, async (req, res) => {
   const term = String(req.query.q || "").trim();
   if (!term) {
     // An empty term must not dump the whole customer book.
@@ -4070,7 +4628,7 @@ app.get("/api/customers/search", ensureAuth, async (req, res) => {
   return res.json(results);
 });
 
-app.get("/api/customers/:id/purchase-history", ensureAuth, async (req, res) => {
+app.get("/api/customers/:id/purchase-history", ensureAuthWithSubscription, async (req, res) => {
   const resolved = await resolveHistoryCustomer(req, res);
   if (!resolved) return;
   try {
@@ -4097,7 +4655,7 @@ app.get("/api/customers/:id/purchase-history", ensureAuth, async (req, res) => {
   }
 });
 
-app.get("/api/customers/:id/summary", ensureAuth, async (req, res) => {
+app.get("/api/customers/:id/summary", ensureAuthWithSubscription, async (req, res) => {
   const resolved = await resolveHistoryCustomer(req, res);
   if (!resolved) return;
   try {
@@ -4111,7 +4669,7 @@ app.get("/api/customers/:id/summary", ensureAuth, async (req, res) => {
   }
 });
 
-app.get("/api/:resource", ensureAuth, async (req, res) => {
+app.get("/api/:resource", ensureAuthWithSubscription, async (req, res) => {
   const { resource } = req.params;
   // Every resource in this codebase has a MySQL-backed query module;
   // unknown resources return 501 with a clear "not implemented yet"
@@ -4131,7 +4689,7 @@ app.get("/api/:resource", ensureAuth, async (req, res) => {
   return res.json(items);
 });
 
-app.post("/api/:resource", ensureAuth, async (req, res) => {
+app.post("/api/:resource", ensureAuthWithSubscription, async (req, res) => {
   const { resource } = req.params;
   const mysqlQueries = mysqlResources[resource];
   if (!mysqlQueries) {
@@ -4169,7 +4727,7 @@ app.post("/api/:resource", ensureAuth, async (req, res) => {
   return res.json(created);
 });
 
-app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
+app.put("/api/:resource/:id", ensureAuthWithSubscription, async (req, res) => {
   const { resource, id } = req.params;
   const mysqlQueries = mysqlResources[resource];
   if (!mysqlQueries) {
@@ -4302,7 +4860,7 @@ app.put("/api/:resource/:id", ensureAuth, async (req, res) => {
   return res.json(updated);
 });
 
-app.delete("/api/:resource/:id", ensureAuth, async (req, res) => {
+app.delete("/api/:resource/:id", ensureAuthWithSubscription, async (req, res) => {
   const { resource, id } = req.params;
   // Invoices are deliberately excluded from the generic delete.
   //

@@ -244,6 +244,40 @@ const MIGRATIONS = [
     column: "field_values",
     ddl: "ALTER TABLE `services` ADD COLUMN `field_values` LONGTEXT NULL AFTER `hsn_sac`",
   },
+  // Razorpay provider plan IDs are nullable on purpose — a NULL cycle
+  // means that cycle is simply not purchasable, and the subscription
+  // service reports it as PROVIDER_PLAN_MISSING before any provider
+  // call. Same probe-and-ALTER-if-missing convention as every other
+  // column-add above, so an existing plans table gets the columns added
+  // idempotently and a fresh table created by TABLE_MIGRATIONS now
+  // includes them too.
+  {
+    name: "plans.provider_plan_id",
+    table: "plans",
+    column: "provider_plan_id",
+    ddl: "ALTER TABLE `plans` ADD COLUMN `provider_plan_id` VARCHAR(255) NULL AFTER `yearly_price`",
+  },
+  {
+    name: "plans.provider_plan_id_yearly",
+    table: "plans",
+    column: "provider_plan_id_yearly",
+    ddl: "ALTER TABLE `plans` ADD COLUMN `provider_plan_id_yearly` VARCHAR(255) NULL AFTER `provider_plan_id`",
+  },
+  // Task 10: subscription lifecycle hardening (code definitions only —
+  // the DBA applies these manually per the migration checklist; never
+  // executed against TiDB by this change).
+  {
+    name: "subscriptions.past_due_since",
+    table: "subscriptions",
+    column: "past_due_since",
+    ddl: "ALTER TABLE `subscriptions` ADD COLUMN `past_due_since` DATETIME(3) NULL AFTER `razorpay_subscription_id`",
+  },
+  {
+    name: "subscriptions.billing_anchor_day",
+    table: "subscriptions",
+    column: "billing_anchor_day",
+    ddl: "ALTER TABLE `subscriptions` ADD COLUMN `billing_anchor_day` TINYINT NULL AFTER `past_due_since`",
+  },
 ];
 
 const isDenied = (err) => {
@@ -607,6 +641,104 @@ const TABLE_MIGRATIONS = [
       KEY \`idx_srh_service_id\` (\`service_id\`, \`changed_at\`),
       KEY \`idx_srh_changed_at\` (\`changed_at\`),
       KEY \`idx_srh_user\` (\`changed_by_user_id\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  {
+    name: "plans",
+    table: "plans",
+    ddl: `CREATE TABLE \`plans\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`name\` VARCHAR(255) NOT NULL,
+      \`monthly_price\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      \`yearly_price\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      \`provider_plan_id\` VARCHAR(255) NULL,
+      \`provider_plan_id_yearly\` VARCHAR(255) NULL,
+      \`trial_days\` INT NOT NULL DEFAULT 0,
+      \`active\` TINYINT(1) NOT NULL DEFAULT 1,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  {
+    name: "subscriptions",
+    table: "subscriptions",
+    ddl: `CREATE TABLE \`subscriptions\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`tenant_email\` VARCHAR(255) NOT NULL,
+      \`plan_id\` BIGINT UNSIGNED NULL,
+      \`plan_name\` VARCHAR(255) NULL,
+      \`billing_cycle\` ENUM('monthly', 'yearly') NOT NULL DEFAULT 'monthly',
+      \`subscribed_price\` DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      \`status\` ENUM('trialing', 'active', 'past_due', 'cancelled', 'expired') NOT NULL DEFAULT 'trialing',
+      \`started_at\` DATETIME(3) NULL,
+      \`expires_at\` DATETIME(3) NULL,
+      \`razorpay_subscription_id\` VARCHAR(255) NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      UNIQUE KEY \`uq_sub_tenant\` (\`tenant_email\`),
+      KEY \`idx_sub_status\` (\`status\`),
+      KEY \`idx_sub_expires\` (\`expires_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  {
+    name: "subscription_events",
+    table: "subscription_events",
+    ddl: `CREATE TABLE \`subscription_events\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`subscription_id\` BIGINT UNSIGNED NOT NULL,
+      \`event_type\` VARCHAR(100) NOT NULL,
+      \`payload\` JSON NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      KEY \`idx_se_sub\` (\`subscription_id\`, \`created_at\`),
+      KEY \`idx_se_type\` (\`event_type\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  {
+    name: "payment_records",
+    table: "payment_records",
+    ddl: `CREATE TABLE \`payment_records\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`subscription_id\` BIGINT UNSIGNED NOT NULL,
+      \`provider_payment_id\` VARCHAR(255) NOT NULL,
+      \`amount\` DECIMAL(12, 2) NOT NULL,
+      \`currency\` VARCHAR(3) NOT NULL DEFAULT 'INR',
+      \`status\` ENUM('created', 'authorized', 'captured', 'refunded', 'failed') NOT NULL DEFAULT 'created',
+      \`method\` VARCHAR(50) NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      UNIQUE KEY \`uq_pr_provider_payment\` (\`provider_payment_id\`),
+      KEY \`idx_pr_sub\` (\`subscription_id\`, \`created_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  // Task 10 (code definitions only — DBA applies manually):
+  // webhook event-id dedup table. UNIQUE(event_id) is the enforcement for
+  // concurrent duplicate deliveries. Retention is a deployment/product
+  // decision — see the manual migration checklist; retain at least the
+  // provider retry window plus margin.
+  {
+    name: "webhook_events",
+    table: "webhook_events",
+    ddl: `CREATE TABLE \`webhook_events\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`event_id\` VARCHAR(255) NOT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      UNIQUE KEY \`uq_we_event\` (\`event_id\`),
+      KEY \`idx_we_created\` (\`created_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  // Task 10 (code definitions only — DBA applies manually):
+  // SUPER_OWNER-approved legacy tenant allowlist. Exact-match on the
+  // canonical tenant key (trimmed + lowercased).
+  {
+    name: "legacy_tenant_allowlist",
+    table: "legacy_tenant_allowlist",
+    ddl: `CREATE TABLE \`legacy_tenant_allowlist\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`tenant_key\` VARCHAR(255) NOT NULL,
+      \`approved_by_email\` VARCHAR(255) NULL,
+      \`reason\` TEXT NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      UNIQUE KEY \`uq_lta_tenant\` (\`tenant_key\`)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   },
 ];
