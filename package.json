@@ -15,8 +15,13 @@
     "test:dashboard": "node --test dashboard.authorization.test.js",
     "test:invoices": "node --test invoice.authorization.test.js invoice-list-scope.authorization.test.js",
     "test:discount": "node --test discount-sql.test.js shift-discount.test.js",
-    "test:customerSearch": "node --test customer-search-route.authorization.test.js",
-    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js audit-log.authorization.test.js returns.authorization.test.js dashboard.authorization.test.js invoice-list-scope.authorization.test.js discount-sql.test.js shift-discount.test.js customer-search-route.authorization.test.js"
+    "test:customerSearch": "node --test customer-search-route.authorization.test.js super-overview.authorization.test.js",
+    "test": "node --test realtime/sse.authorization.test.js customers.authorization.test.js billable-customer.authorization.test.js invoice.authorization.test.js runtime-migrations.critical.test.js lib/publicInvoice.test.js lib/razorpay.test.js lib/subscription-service.test.js lib/subscription-webhook.test.js subscription-webhook-route.test.js subscription-routes.authorization.test.js plans.authorization.test.js lib/require-active-subscription.test.js subscription-entitlement.authorization.test.js audit-log.authorization.test.js returns.authorization.test.js dashboard.authorization.test.js invoice-list-scope.authorization.test.js discount-sql.test.js shift-discount.test.js customer-search-route.authorization.test.js super-overview.authorization.test.js super-payment-records.authorization.test.js super-subscription-events.authorization.test.js super-tenants.authorization.test.js super-tenant-detail.authorization.test.js user-access.authorization.test.js subscription-lifecycle.authorization.test.js subscription-lifecycle-hardening.authorization.test.js",
+    "test:razorpay": "node --test lib/razorpay.test.js",
+    "test:subscription-service": "node --test lib/subscription-service.test.js subscription-routes.authorization.test.js plans.authorization.test.js",
+    "test:entitlement": "node --test lib/require-active-subscription.test.js subscription-entitlement.authorization.test.js",
+    "test:webhook": "node --test lib/subscription-webhook.test.js subscription-webhook-route.test.js subscription-lifecycle.authorization.test.js subscription-lifecycle-hardening.authorization.test.js",
+    "test:smoke:razorpay": "node scripts/razorpay-test-mode-smoke.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
