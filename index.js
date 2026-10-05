@@ -78,6 +78,15 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
+// Parse FRONTEND_ORIGIN as a comma-separated list of allowed origins.
+// Single value is still supported (backward compatible). Each entry may
+// include a scheme ("https://example.com") or be a bare hostname
+// ("example.com"). Trailing slashes are stripped for comparison.
+const ALLOWED_FRONTEND_ORIGINS = String(FRONTEND_ORIGIN)
+  .split(",")
+  .map((entry) => entry.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 const isAllowedOrigin = (origin) => {
   if (!origin) return false;
 
@@ -86,20 +95,15 @@ const isAllowedOrigin = (origin) => {
     const hostname = parsed.hostname;
     const protocol = parsed.protocol;
 
-    if (origin === FRONTEND_ORIGIN) {
-      return true;
-    }
-
-    // Allow origins that match FRONTEND_ORIGIN after normalization. The
-    // env var on Render was set without the https:// prefix once and the
-    // browser sends it with the protocol — comparing parsed (protocol,
-    // hostname) handles both forms.
-    if (FRONTEND_ORIGIN) {
-      // FRONTEND_ORIGIN may be set with or without a scheme ("example.com"
-      // vs "https://example.com"). Normalize to a hostname for comparison.
-      const envValue = String(FRONTEND_ORIGIN).trim();
-      const envHostname = envValue.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-      if (envHostname && hostname === envHostname) {
+    // Check against every configured origin (exact match or hostname match).
+    for (const allowed of ALLOWED_FRONTEND_ORIGINS) {
+      if (origin === allowed) {
+        return true;
+      }
+      // Normalize the configured origin to a hostname for comparison.
+      // Handles "example.com" vs "https://example.com" and trailing slashes.
+      const allowedHostname = allowed.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+      if (allowedHostname && hostname === allowedHostname) {
         return true;
       }
     }

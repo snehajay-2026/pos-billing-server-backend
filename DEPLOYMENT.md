@@ -103,9 +103,11 @@ This document covers deploying the backend to **Vercel** with MySQL on
    wiring is correct.
 
 3. **Check CORS** if the frontend gets a 401/403:
-   - The backend's CORS allowlist (in `server/index.js`) accepts
+   - The backend's CORS allowlist (in `index.js`) accepts
      `localhost:3000`, `127.0.0.1`, and the `FRONTEND_ORIGIN` env var.
-   - Add the deployed frontend URL to `FRONTEND_ORIGIN` on Vercel.
+   - `FRONTEND_ORIGIN` supports comma-separated values for multiple origins:
+     `FRONTEND_ORIGIN=https://app1.vercel.app,https://app2.vercel.app`
+   - Add the deployed frontend URL to `FRONTEND_ORIGIN` on Render.
 
 ## Schema migrations after the first deploy
 
