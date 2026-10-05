@@ -2072,19 +2072,20 @@ app.delete("/api/hotel/dining-bills/:tableId", ensureAuthWithSubscription, async
 // sanitized invoice (no internal `_store*` / `_user_email`, no cashier
 // email, no `items[].meta`) plus the store chrome the thermal
 // renderers need to display the real store name/address/GSTIN/logo.
-app.get("/api/public/invoices/:invoiceNo", async (req, res) => {
-  const row = await invoicesQueries.findByInvoiceNo(req.params.invoiceNo);
+//
+// SECURITY: This endpoint resolves ONLY by public_token. The old
+// invoice_no fallback has been removed — invoice numbers are predictable
+// (SI{year}-{timestamp-slice}) and must never be accepted as an
+// unauthenticated lookup key. Invoices without a public_token are not
+// publicly accessible; the cashier must re-share to generate a new
+// token-based link.
+app.get("/api/public/invoices/:token", async (req, res) => {
+  const token = String(req.params.token || "");
+  const row = await invoicesQueries.findByPublicToken(token);
   if (!row) {
     return res.status(404).json({ error: "Not found" });
   }
   const invoice = await sanitizePublicInvoice(row);
-  // The row's `invoice_no` column may be NULL for legacy / partial rows
-  // even though the URL clearly identifies the invoice. Fill `invoiceNo`
-  // from the URL param so the public receipt renders the number the
-  // customer actually sees in the browser address bar.
-  if (!invoice.invoiceNo && req.params.invoiceNo) {
-    invoice.invoiceNo = String(req.params.invoiceNo);
-  }
   const store = await getPublicStoreChrome(row);
   res.json({ invoice, store });
 });
@@ -4953,10 +4954,33 @@ process.on("uncaughtException", (err) => {
 });
 
 const startServer = async () => {
+  // F6: CREATE TABLE migrations for new feature tables. Must run BEFORE
+  // the column-add migrations below: three column-add entries
+  // (invoice_return_items.original_invoice_no, subscriptions.past_due_since,
+  // subscriptions.billing_anchor_day) target tables this runner creates.
+  // On a fresh DB the column-adds would otherwise ALTER a non-existent
+  // table, fail with a soft-warn, and the column would never land.
+  // Same pattern as the column-add migrations: probe information_schema
+  // from Node, run the DDL only when the table is missing. The app user
+  // (pos_billing_app) is DML-only on some deployments, so we degrade
+  // gracefully with a hint when ALTER/CREATE is denied.
+  try {
+    const tableResult = await runTableMigrations();
+    if (tableResult.applied || tableResult.denied) {
+      console.log(
+        `[startup] runtime-table-migrations: applied=${tableResult.applied} skipped=${tableResult.skipped} denied=${tableResult.denied}`
+      );
+    }
+  } catch (err) {
+    console.warn("[startup] runtime-table-migrations threw:", err.message);
+  }
+
   // Self-applying, idempotent column-level migrations. Keeps deploys
   // self-healing for additive changes the app code expects to read/write
   // (e.g. invoices.status — without it, the Clear/Cancel PUT silently
   // drops the value and the row returns without a status).
+  // Runs AFTER runTableMigrations() so every target table exists before
+  // any column-add ALTER fires.
   let migrationResult;
   try {
     migrationResult = await runRuntimeMigrations();
@@ -4976,22 +5000,6 @@ const startServer = async () => {
       unconfirmedCritical: [],
       unconfirmedNames: [],
     };
-  }
-
-  // F6: CREATE TABLE migrations for new feature tables. Same pattern as
-  // the column-add migrations above: probe information_schema from Node,
-  // run the DDL only when the table is missing. The app user
-  // (pos_billing_app) is DML-only on some deployments, so we degrade
-  // gracefully with a hint when ALTER/CREATE is denied.
-  try {
-    const tableResult = await runTableMigrations();
-    if (tableResult.applied || tableResult.denied) {
-      console.log(
-        `[startup] runtime-table-migrations: applied=${tableResult.applied} skipped=${tableResult.skipped} denied=${tableResult.denied}`
-      );
-    }
-  } catch (err) {
-    console.warn("[startup] runtime-table-migrations threw:", err.message);
   }
 
   // F8 hard-startup-gate. A small set of migrations is correctness-

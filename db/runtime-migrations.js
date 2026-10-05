@@ -278,6 +278,84 @@ const MIGRATIONS = [
     column: "billing_anchor_day",
     ddl: "ALTER TABLE `subscriptions` ADD COLUMN `billing_anchor_day` TINYINT NULL AFTER `past_due_since`",
   },
+  {
+    // Retail HSN/SAC code. The ProductPage search box already advertises
+    // "Search by name, barcode, category or HSN…" and gstReport()
+    // aggregates invoice items by `hsn`, but the column never existed —
+    // so any HSN a product carried was dropped before it reached the DB.
+    // Nullable: every existing product simply has no HSN, and the GST
+    // report already renders a missing code as "—".
+    name: "products.hsn",
+    table: "products",
+    column: "hsn",
+    ddl: "ALTER TABLE `products` ADD COLUMN `hsn` VARCHAR(16) NULL AFTER `unit`",
+  },
+  {
+    // Laundry token number. LaundryBilling sends `token` on the invoice
+    // payload and LaundryThermalReceipt renders it straight off the
+    // invoice, but `invoices` had no column — so the token vanished from
+    // the receipt on any reload or reprint. Nullable and laundry-only;
+    // every other vertical leaves it NULL.
+    name: "invoices.token",
+    table: "invoices",
+    column: "token",
+    ddl: "ALTER TABLE `invoices` ADD COLUMN `token` VARCHAR(32) NULL AFTER `customer_mobile`",
+  },
+  {
+    // Laundry expected-return date — same story as invoices.token.
+    name: "invoices.expected_return",
+    table: "invoices",
+    column: "expected_return",
+    ddl: "ALTER TABLE `invoices` ADD COLUMN `expected_return` DATE NULL AFTER `token`",
+  },
+  {
+    // Public invoice share-link token. The public invoice endpoint
+    // (/api/public/invoices/:invoiceNo) is intentionally unauthenticated
+    // for WhatsApp share links, but invoice_no is a predictable
+    // timestamp-based identifier (SI{year}-{Date.now().slice(-6)}),
+    // making public invoices enumerable. This column stores a
+    // cryptographically random 64-char hex token that the public
+    // share link uses instead. Existing rows are backfilled by the
+    // 019_invoice_public_token.sql migration; this runtime migration
+    // only ensures the column exists.
+    name: "invoices.public_token",
+    table: "invoices",
+    column: "public_token",
+    ddl: "ALTER TABLE `invoices` ADD COLUMN `public_token` VARCHAR(64) NULL AFTER `invoice_no`",
+  },
+  {
+    // Retail returns: original_invoice_no on the items table. Migration 017
+    // created the table WITHOUT this column and relied on a stored
+    // procedure to add it later — but TiDB Cloud's SQL editor cannot run
+    // stored procedures, so on TiDB the column and its index never landed.
+    // returns.js reads row.original_invoice_no for the API response, so a
+    // missing column means the field is silently null.
+    //
+    // This migration handles the partially-migrated case: the table exists
+    // (017 ran) but the column doesn't (the procedure couldn't run). The
+    // probe checks for the COLUMN, not the table, so it correctly detects
+    // the gap and runs the ALTER. On a fresh DB where TABLE_MIGRATIONS
+    // creates the table with the column already present, this probe finds
+    // it and skips.
+    name: "invoice_return_items.original_invoice_no",
+    table: "invoice_return_items",
+    column: "original_invoice_no",
+    ddl: "ALTER TABLE `invoice_return_items` ADD COLUMN `original_invoice_no` VARCHAR(64) NULL AFTER `product_name`, ADD KEY `idx_invoice_return_items_invoice` (`original_invoice_no`)",
+  },
+  {
+    // Schema-fidelity backfill for `invoice_returns.approved_by`. Migration
+    // 017_retail_returns.sql defines the column and db/queries/returns.js
+    // reads it (rowToReturn → approvedBy), but an earlier revision of the
+    // TABLE_MIGRATIONS CREATE below omitted it, so a table created by that
+    // revision is missing the column. The CREATE below now includes it for
+    // fresh databases; this probe-guarded ADD COLUMN heals a database that
+    // was already created without it. Nullable and unused by any write path
+    // today, so the ALTER is purely additive and changes no behaviour.
+    name: "invoice_returns.approved_by",
+    table: "invoice_returns",
+    column: "approved_by",
+    ddl: "ALTER TABLE `invoice_returns` ADD COLUMN `approved_by` BIGINT UNSIGNED NULL AFTER `created_by`",
+  },
 ];
 
 const isDenied = (err) => {
@@ -739,6 +817,77 @@ const TABLE_MIGRATIONS = [
       \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
       \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
       UNIQUE KEY \`uq_lta_tenant\` (\`tenant_key\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  // Retail returns / refunds / exchanges. Migration 017 created these tables
+  // but relied on a stored procedure to add `original_invoice_no` to
+  // invoice_return_items — and TiDB Cloud's SQL editor cannot run stored
+  // procedures, so on TiDB the column and its index never landed. These
+  // CREATE TABLE statements define the column BEFORE the index (no stored
+  // procedure needed), making the schema correct on both MySQL and TiDB.
+  //
+  // The column-add migrations `invoice_return_items.original_invoice_no`
+  // and `invoice_returns.approved_by` in MIGRATIONS above handle the
+  // partially-migrated case (table exists from 017 or from an earlier
+  // revision of this CREATE, column missing). Startup order is
+  // runTableMigrations() FIRST, then runRuntimeMigrations(): on a fresh DB
+  // these CREATEs run first (column-before-index), so the column-add probes
+  // then find every column present and skip.
+  //
+  // db/schema/018_retail_returns_tidb_fixup.sql is the DBA-facing equivalent
+  // of these two CREATEs for TiDB Cloud's SQL editor, with the same
+  // column-before-index ordering. 017_retail_returns.sql is left untouched.
+  {
+    name: "invoice_returns",
+    table: "invoice_returns",
+    ddl: `CREATE TABLE \`invoice_returns\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`invoice_no\` VARCHAR(64) NULL,
+      \`type\` ENUM('return', 'refund', 'exchange', 'cancel') NOT NULL DEFAULT 'return',
+      \`scope\` ENUM('full', 'partial') NOT NULL DEFAULT 'partial',
+      \`refund_method\` ENUM('cash', 'upi', 'card', 'bank_transfer', 'store_credit', 'exchange', 'none') NOT NULL DEFAULT 'cash',
+      \`replacement_invoice_no\` VARCHAR(64) NULL,
+      \`sub_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`gst_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`grand_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`price_difference\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`reason\` VARCHAR(512) NULL,
+      \`status\` ENUM('pending', 'approved', 'rejected', 'completed') NOT NULL DEFAULT 'completed',
+      \`created_by\` BIGINT UNSIGNED NULL,
+      \`approved_by\` BIGINT UNSIGNED NULL,
+      \`_store_type\` VARCHAR(64) NULL,
+      \`_store_id\` VARCHAR(128) NULL,
+      \`_user_email\` VARCHAR(255) NULL,
+      \`created_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      \`updated_at\` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+      KEY \`idx_invoice_returns_invoice_no\` (\`invoice_no\`),
+      KEY \`idx_invoice_returns_store\` (\`_store_type\`, \`_store_id\`),
+      KEY \`idx_invoice_returns_user\` (\`_user_email\`),
+      KEY \`idx_invoice_returns_status\` (\`status\`),
+      KEY \`idx_invoice_returns_created\` (\`created_at\`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+  },
+  {
+    name: "invoice_return_items",
+    table: "invoice_return_items",
+    ddl: `CREATE TABLE \`invoice_return_items\` (
+      \`id\` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      \`return_id\` BIGINT UNSIGNED NOT NULL,
+      \`product_id\` BIGINT UNSIGNED NULL,
+      \`product_name\` VARCHAR(255) NOT NULL,
+      \`original_invoice_no\` VARCHAR(64) NULL,
+      \`original_quantity\` DECIMAL(12, 3) NOT NULL DEFAULT 0,
+      \`returned_quantity\` DECIMAL(12, 3) NOT NULL DEFAULT 0,
+      \`unit_price\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`line_discount\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`line_gst\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`line_total\` DECIMAL(12, 2) NOT NULL DEFAULT 0,
+      \`condition\` ENUM('resalable', 'damaged') NOT NULL DEFAULT 'resalable',
+      KEY \`idx_invoice_return_items_return\` (\`return_id\`),
+      KEY \`idx_invoice_return_items_product\` (\`product_id\`),
+      KEY \`idx_invoice_return_items_invoice\` (\`original_invoice_no\`),
+      CONSTRAINT \`fk_invoice_return_items_return\`
+        FOREIGN KEY (\`return_id\`) REFERENCES \`invoice_returns\` (\`id\`) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   },
 ];

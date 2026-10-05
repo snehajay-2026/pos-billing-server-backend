@@ -19,7 +19,17 @@ const { query, pool } = require("../pool");
 // Columns selected in every read. Kept as a single source of truth so
 // rowToProduct() and the SELECT list never drift.
 const COLUMNS =
-  "id, name, price, gst, stock, barcode, category, unit, image_path, image_mime, _store_type, _store_id, _user_email, created_at, updated_at";
+  "id, name, price, gst, stock, barcode, category, hsn, unit, image_path, image_mime, _store_type, _store_id, _user_email, created_at, updated_at";
+
+// HSN/SAC is free text on the product row. Normalise it the same way the
+// customer GSTIN is handled: trim, cap at the column width, and collapse
+// an empty value to NULL so "no HSN" is one value in the DB rather than
+// two (NULL and ""). gstReport() already treats a missing code as "—".
+const normalizeHsn = (v) => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim().slice(0, 16);
+  return s || null;
+};
 
 const toNumber = (v) => {
   if (v === null || v === undefined || v === "") return null;
@@ -44,6 +54,7 @@ const rowToProduct = (row) => {
     stock: toNumber(row.stock),
     barcode: row.barcode || null,
     category: row.category || null,
+    hsn: row.hsn || null,
     unit: row.unit || "unit",
     imageUrl: imageUrlFor(row),
     imagePath: row.image_path || null,
@@ -165,9 +176,9 @@ const create = async (item, scope) => {
   const id = Date.now();
   await query(
     `INSERT INTO products
-       (id, name, price, gst, stock, barcode, category, unit,
+       (id, name, price, gst, stock, barcode, category, hsn, unit,
         _store_type, _store_id, _user_email, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3), NOW(3))`,
     [
       id,
       item.name || "",
@@ -176,6 +187,7 @@ const create = async (item, scope) => {
       toNumber(item.stock) ?? 0,
       item.barcode || null,
       item.category || null,
+      normalizeHsn(item.hsn),
       item.unit === "kg" ? "kg" : "unit",
       scope.storeType || null,
       scope.storeId || null,
@@ -191,13 +203,14 @@ const create = async (item, scope) => {
 // `{ ...existing, ...patch }`. `removeImage: true` clears the image
 // reference (the route also unlinks the file from disk).
 const update = async (id, patch) => {
-  const allowed = ["name", "price", "gst", "stock", "barcode", "category", "unit"];
+  const allowed = ["name", "price", "gst", "stock", "barcode", "category", "hsn", "unit"];
   const sets = [];
   const params = [];
   for (const k of allowed) {
     if (!Object.prototype.hasOwnProperty.call(patch, k)) continue;
     let v = patch[k];
     if (["price", "gst", "stock"].includes(k)) v = toNumber(v);
+    if (k === "hsn") v = normalizeHsn(v);
     if (k === "unit" && v !== "kg") v = "unit";
     sets.push(`\`${k}\` = ?`);
     params.push(v);

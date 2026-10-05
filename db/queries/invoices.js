@@ -33,26 +33,45 @@ const { buildInvoiceNoScope } = require("../../lib/invoice-scope");
 // invoice row can reference the CRM record that paid for it. Nullable
 // because walking-customer invoices don't link to anyone. Same probe
 // pattern.
+//
+// `invoices.token` + `invoices.expected_return` are added by
+// `runtime-migrations.js` for the Laundry vertical. LaundryBilling sends
+// both on the invoice payload and LaundryThermalReceipt renders them off
+// the invoice row, but there were no columns to hold them — so a token
+// printed on the first render was gone on any reload or reprint. Both are
+// nullable and stay NULL for every other vertical. Same probe pattern.
 let hasGeneratedAtColumn = false;
 let hasShiftIdColumn = false;
 let hasCustomerIdColumn = false;
+let hasTokenColumn = false;
+let hasExpectedReturnColumn = false;
+let hasPublicTokenColumn = false;
 (async () => {
   try {
     const [rows] = await query(
       `SELECT
          SUM(CASE WHEN column_name = 'generated_at' THEN 1 ELSE 0 END) AS n_gen,
          SUM(CASE WHEN column_name = 'shift_id'     THEN 1 ELSE 0 END) AS n_shift,
-         SUM(CASE WHEN column_name = 'customer_id'  THEN 1 ELSE 0 END) AS n_cust
+         SUM(CASE WHEN column_name = 'customer_id'  THEN 1 ELSE 0 END) AS n_cust,
+         SUM(CASE WHEN column_name = 'token'        THEN 1 ELSE 0 END) AS n_token,
+         SUM(CASE WHEN column_name = 'expected_return' THEN 1 ELSE 0 END) AS n_exp,
+         SUM(CASE WHEN column_name = 'public_token' THEN 1 ELSE 0 END) AS n_pub
        FROM information_schema.columns
        WHERE table_schema = DATABASE() AND table_name = 'invoices'`
     );
     hasGeneratedAtColumn = Number((rows && rows[0] && rows[0].n_gen) || 0) > 0;
     hasShiftIdColumn = Number((rows && rows[0] && rows[0].n_shift) || 0) > 0;
     hasCustomerIdColumn = Number((rows && rows[0] && rows[0].n_cust) || 0) > 0;
+    hasTokenColumn = Number((rows && rows[0] && rows[0].n_token) || 0) > 0;
+    hasExpectedReturnColumn = Number((rows && rows[0] && rows[0].n_exp) || 0) > 0;
+    hasPublicTokenColumn = Number((rows && rows[0] && rows[0].n_pub) || 0) > 0;
   } catch (e) {
     hasGeneratedAtColumn = false;
     hasShiftIdColumn = false;
     hasCustomerIdColumn = false;
+    hasTokenColumn = false;
+    hasExpectedReturnColumn = false;
+    hasPublicTokenColumn = false;
   }
 })();
 
@@ -65,7 +84,7 @@ let hasCustomerIdColumn = false;
 // this module finishes evaluating — so a `const` snapshot taken at
 // module-load time would permanently pin the flags to false).
 const COLUMNS_BASE =
-  "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email";
+  "id, invoice_no, public_token, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, status, customer_name, customer_mobile, _store_type, _store_id, _user_email";
 const COLUMNS_NO_OPTIONAL =
   `${COLUMNS_BASE}, created_at, updated_at`;
 const COLUMNS_WITH_GEN =
@@ -84,14 +103,21 @@ const COLUMNS_WITH_ALL =
   `${COLUMNS_BASE}, customer_id, created_at, generated_at, shift_id, updated_at`;
 const COLUMNS = {
   get withGen() {
-    if (hasGeneratedAtColumn && hasShiftIdColumn && hasCustomerIdColumn) return COLUMNS_WITH_ALL;
-    if (hasGeneratedAtColumn && hasShiftIdColumn) return COLUMNS_WITH_BOTH;
-    if (hasGeneratedAtColumn && hasCustomerIdColumn) return COLUMNS_WITH_GEN_CUST;
-    if (hasShiftIdColumn && hasCustomerIdColumn) return COLUMNS_WITH_SHIFT_CUST;
-    if (hasGeneratedAtColumn) return COLUMNS_WITH_GEN;
-    if (hasShiftIdColumn) return COLUMNS_WITH_SHIFT;
-    if (hasCustomerIdColumn) return COLUMNS_WITH_CUST;
-    return COLUMNS_NO_OPTIONAL;
+    let cols;
+    if (hasGeneratedAtColumn && hasShiftIdColumn && hasCustomerIdColumn) cols = COLUMNS_WITH_ALL;
+    else if (hasGeneratedAtColumn && hasShiftIdColumn) cols = COLUMNS_WITH_BOTH;
+    else if (hasGeneratedAtColumn && hasCustomerIdColumn) cols = COLUMNS_WITH_GEN_CUST;
+    else if (hasShiftIdColumn && hasCustomerIdColumn) cols = COLUMNS_WITH_SHIFT_CUST;
+    else if (hasGeneratedAtColumn) cols = COLUMNS_WITH_GEN;
+    else if (hasShiftIdColumn) cols = COLUMNS_WITH_SHIFT;
+    else if (hasCustomerIdColumn) cols = COLUMNS_WITH_CUST;
+    else cols = COLUMNS_NO_OPTIONAL;
+    // Laundry-only optional columns, appended here so the eight
+    // combinations above don't have to double. Both are nullable and
+    // NULL for every other vertical, so appending is safe for all callers.
+    if (hasTokenColumn) cols += ", token";
+    if (hasExpectedReturnColumn) cols += ", expected_return";
+    return cols;
   },
 };
 
@@ -120,11 +146,35 @@ const toMysqlDatetime = (v) => {
   );
 };
 
+// Laundry token — free text the cashier types (or the UI auto-generates).
+// Trim, cap at the column width, collapse empty to NULL so "no token" is
+// one value in the DB rather than two (NULL and "").
+const normalizeToken = (v) => {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim().slice(0, 32);
+  return s || null;
+};
+
+// Coerce a date-ish value to a MySQL DATE literal ('YYYY-MM-DD') or null.
+// Accepts the 'YYYY-MM-DD' a date input sends, an ISO datetime, or a Date;
+// anything unparseable becomes NULL rather than throwing on save.
+const toMysqlDate = (v) => {
+  if (v === null || v === undefined || v === "") return null;
+  const s = String(v).trim();
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(s);
+  if (m) return m[1];
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+};
+
 const rowToInvoice = (row) => {
   if (!row) return null;
   return {
     id: row.id != null ? Number(row.id) : row.id,
     invoiceNo: row.invoice_no,
+    publicToken: row.public_token || null,
     date: row.date,
     items: row.items || [],
     subTotal: toNumber(row.sub_total),
@@ -140,6 +190,16 @@ const rowToInvoice = (row) => {
     // F8: nullable FK to customers.id. NULL = walking customer
     // (preserved when no customer was attached on the bill).
     customerId: row.customer_id != null ? Number(row.customer_id) : row.customer_id,
+    // Laundry-only (NULL for every other vertical). The thermal receipt
+    // renders these straight off the invoice object, so they must survive
+    // the round trip through the DB or a reprinted bill loses its token
+    // and expected-return date.
+    token: row.token || null,
+    expectedReturn: row.expected_return || null,
+    // Laundry-only (NULL for every other vertical). The thermal receipt
+    // reads these straight off the invoice row, so they must round-trip.
+    token: row.token || null,
+    expectedReturn: row.expected_return || null,
     _storeType: row._store_type || null,
     _storeId: row._store_id || null,
     _userEmail: row._user_email || null,
@@ -211,6 +271,18 @@ const findByInvoiceNo = async (invoiceNo) => {
   return rowToInvoice(rows[0][0]);
 };
 
+// Look up an invoice by its unguessable public share token. Used by the
+// public invoice endpoint (/api/public/invoices/by-token/:token) so the
+// WhatsApp share link no longer relies on the predictable invoice_no.
+const findByPublicToken = async (token) => {
+  const rows = await query(
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE public_token = ? LIMIT 1`,
+    [String(token)]
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToInvoice(rows[0][0]);
+};
+
 // Authenticated invoice-number lookup. Keep the unscoped helper above for
 // the intentionally public invoice route and controlled internal readbacks;
 // request handlers must use this variant with the scope resolved from the
@@ -220,6 +292,19 @@ const findByInvoiceNoScoped = async (invoiceNo, scope = {}) => {
   const rows = await query(
     `SELECT ${COLUMNS.withGen} FROM invoices WHERE ${where} LIMIT 1`,
     params
+  );
+  if (!rows[0] || rows[0].length === 0) return null;
+  return rowToInvoice(rows[0][0]);
+};
+
+// Public share-link token lookup. The public invoice endpoint uses this
+// instead of findByInvoiceNo so the URL carries a cryptographically random
+// 64-char hex token rather than the predictable invoice_no. Returns null
+// when the token is unknown or the row has no token (legacy invoice).
+const findByPublicToken = async (token) => {
+  const rows = await query(
+    `SELECT ${COLUMNS.withGen} FROM invoices WHERE public_token = ? LIMIT 1`,
+    [String(token)]
   );
   if (!rows[0] || rows[0].length === 0) return null;
   return rowToInvoice(rows[0][0]);
@@ -347,6 +432,11 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn, custom
     const insertBaseCols =
       "id, invoice_no, date, items, sub_total, gst_total, grand_total, discount, discount_breakdown, payment_mode, billed_by, customer_name, customer_mobile, _store_type, _store_id, _user_email, created_at";
     const insertBaseVals = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(3)";
+    // Generate a cryptographically random public share-link token.
+    // 32 bytes → 64 hex chars. This is the non-enumerable identifier
+    // that replaces the predictable invoice_no in public share URLs.
+    const crypto = require("crypto");
+    const publicToken = crypto.randomBytes(32).toString("hex");
     let insertCols = insertBaseCols;
     let insertVals = insertBaseVals;
     const tail = [];
@@ -367,6 +457,20 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn, custom
       insertCols += ", customer_id";
       insertVals += ", ?";
       tail.push(resolvedCustomerId);
+    }
+    // Laundry-only fields. Gated on the same optional-column probes as the
+    // rest of the dynamic INSERT so a database that hasn't run the
+    // runtime migration yet still inserts cleanly (the columns are simply
+    // omitted). `token` is free text; `expectedReturn` is a DATE.
+    if (hasTokenColumn) {
+      insertCols += ", token";
+      insertVals += ", ?";
+      tail.push(normalizeToken(invoice.token));
+    }
+    if (hasExpectedReturnColumn) {
+      insertCols += ", expected_return";
+      insertVals += ", ?";
+      tail.push(toMysqlDate(invoice.expectedReturn ?? invoice.expected_return));
     }
     insertCols += ", updated_at";
     insertVals += ", NOW(3)";
@@ -389,6 +493,11 @@ const createWithStockDecrement = async (invoice, resolveQty, scope, conn, custom
       scope.email || null,
       ...tail,
     ];
+    if (hasPublicTokenColumn) {
+      insertCols += ", public_token";
+      insertVals += ", ?";
+      insertParams.push(publicToken);
+    }
     await conn.query(
       `INSERT INTO invoices (${insertCols}) VALUES (${insertVals})`,
       insertParams
@@ -594,6 +703,24 @@ const create = async (item, scope, conn, customerId) => {
     insertVals += ", ?";
     tail.push(resolvedCustomerId);
   }
+  // Laundry-only fields, same gating as createWithStockDecrement above.
+  if (hasTokenColumn) {
+    insertCols += ", token";
+    insertVals += ", ?";
+    tail.push(normalizeToken(item.token));
+  }
+  if (hasExpectedReturnColumn) {
+    insertCols += ", expected_return";
+    insertVals += ", ?";
+    tail.push(toMysqlDate(item.expectedReturn ?? item.expected_return));
+  }
+  // Public share-link token — cryptographically random 64-char hex.
+  if (hasPublicTokenColumn) {
+    const crypto = require("crypto");
+    insertCols += ", public_token";
+    insertVals += ", ?";
+    tail.push(crypto.randomBytes(32).toString("hex"));
+  }
   insertCols += ", updated_at";
   insertVals += ", NOW(3)";
   const insertParams = [
@@ -705,6 +832,7 @@ const deleteById = async (id) => {
 module.exports = {
   findByInvoiceNo,
   findByInvoiceNoScoped,
+  findByPublicToken,
   createWithStockDecrement,
   list,
   create,
