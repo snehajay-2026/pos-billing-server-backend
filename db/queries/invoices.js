@@ -297,19 +297,6 @@ const findByInvoiceNoScoped = async (invoiceNo, scope = {}) => {
   return rowToInvoice(rows[0][0]);
 };
 
-// Public share-link token lookup. The public invoice endpoint uses this
-// instead of findByInvoiceNo so the URL carries a cryptographically random
-// 64-char hex token rather than the predictable invoice_no. Returns null
-// when the token is unknown or the row has no token (legacy invoice).
-const findByPublicToken = async (token) => {
-  const rows = await query(
-    `SELECT ${COLUMNS.withGen} FROM invoices WHERE public_token = ? LIMIT 1`,
-    [String(token)]
-  );
-  if (!rows[0] || rows[0].length === 0) return null;
-  return rowToInvoice(rows[0][0]);
-};
-
 // createWithStockDecrement: the atomic checkout. fn(conn) is given a
 // single connection inside withTransaction(); throws if anything goes
 // wrong so the whole txn rolls back.
